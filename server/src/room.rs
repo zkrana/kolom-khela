@@ -99,7 +99,7 @@ fn ring(n: usize) -> Vec<usize> {
 }
 
 pub enum Cmd {
-    Join { user_id: i64, name: String, pen: String, avatar: Option<i64>, tx: Tx },
+    Join { user_id: i64, name: String, pen: String, avatar: Option<i64>, guest: bool, tx: Tx },
     /// `tx` says which connection closed: a player with two tabs, or one who reconnected before the old socket
     /// noticed it was dead, must not be thrown out by the stale one.
     Leave { user_id: i64, tx: Tx },
@@ -112,13 +112,42 @@ pub enum Cmd {
     Close,
 }
 
-#[derive(Clone)]
+/// A copy of what is happening in a room, refreshed on every state change, for the live counter and the admin
+/// pages. The room task owns the real thing; this is read without asking it.
+#[derive(Clone, Default, serde::Serialize)]
 pub struct RoomInfo {
     pub code: String,
     pub host: String,
     pub players: usize,
     pub phase: &'static str,
+    #[serde(rename = "createdAt")]
     pub created_at: i64,
+    pub difficulty: &'static str,
+    /// People with an open connection: seated, and watching. Guests are counted in both and on their own.
+    pub people: usize,
+    pub watchers: usize,
+    pub guests: usize,
+    pub bots: usize,
+    /// Most people connected at once so far; written to rooms_log when the room closes.
+    pub peak: usize,
+    /// Flicks in the match in progress, and matches finished in this room.
+    pub turns: u32,
+    pub games: u32,
+    #[serde(rename = "startedAt")]
+    pub started_at: i64,
+    pub seats: Vec<SeatInfo>,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct SeatInfo {
+    pub name: String,
+    pub pen: String,
+    pub bot: bool,
+    pub guest: bool,
+    pub online: bool,
+    pub alive: bool,
+    pub lives: u32,
+    pub knocks: u32,
 }
 
 #[derive(Clone)]
@@ -142,6 +171,7 @@ struct Seat {
     avatar: Option<i64>,
     tx: Option<Tx>,
     bot: bool,
+    guest: bool,
     reward: i64,
     alive: bool,
     /// Falls left before this player is out. It starts at the difficulty's lives and never goes back up in a game.
@@ -168,6 +198,7 @@ struct Watcher {
     name: String,
     pen: String,
     avatar: Option<i64>,
+    guest: bool,
     tx: Tx,
 }
 
@@ -197,11 +228,19 @@ struct Room {
     results: Value,
     idle_secs: u32,
     ticks: u32,
+    /// For the records: when this match began, turns that ran out, how it ended, and the room's own history.
+    started_at: i64,
+    skips: u32,
+    games_here: u32,
+    peak_people: usize,
+    used_bots: bool,
+    log_id: Option<i64>,
+    close_reason: &'static str,
 }
 
 pub fn spawn_room(state: Arc<AppState>, code: String, host_id: i64, host_name: String) -> RoomHandle {
     let (tx, rx) = unbounded_channel();
-    let info = Arc::new(Mutex::new(RoomInfo { code: code.clone(), host: host_name, players: 0, phase: "lobby", created_at: db::now() }));
+    let info = Arc::new(Mutex::new(RoomInfo { code: code.clone(), host: host_name, phase: "lobby", difficulty: "medium", created_at: db::now(), ..Default::default() }));
     let room = Room {
         state,
         code,
@@ -226,12 +265,21 @@ pub fn spawn_room(state: Arc<AppState>, code: String, host_id: i64, host_name: S
         results: Value::Null,
         idle_secs: 0,
         ticks: 0,
+        started_at: 0,
+        skips: 0,
+        games_here: 0,
+        peak_people: 0,
+        used_bots: false,
+        log_id: None,
+        close_reason: "gone",
     };
     tokio::spawn(run(room, rx));
     RoomHandle { tx, info }
 }
 
 async fn run(mut room: Room, mut rx: UnboundedReceiver<Cmd>) {
+    let host_name = room.info.lock().map(|i| i.host.clone()).unwrap_or_default();
+    room.log_id = db::room_opened(&room.state.pool, &room.code, room.host_id, &host_name).await;
     let mut tick = tokio::time::interval(Duration::from_millis(16));
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
@@ -244,6 +292,9 @@ async fn run(mut room: Room, mut rx: UnboundedReceiver<Cmd>) {
         }
     }
     room.state.rooms.lock().await.remove(&room.code);
+    if let Some(id) = room.log_id {
+        db::room_closed(&room.state.pool, id, room.close_reason, room.games_here as i64, room.peak_people as i64, room.used_bots).await;
+    }
 }
 
 impl Room {
@@ -252,7 +303,10 @@ impl Room {
         self.seats.iter().filter(|s| s.tx.is_some()).count() + self.watchers.len()
     }
 
-    fn sync_info(&self) {
+    fn sync_info(&mut self) {
+        let people = self.connected();
+        self.peak_people = self.peak_people.max(people);
+        self.used_bots |= self.seats.iter().any(|s| s.bot);
         if let Ok(mut i) = self.info.lock() {
             i.players = self.seats.len();
             i.phase = match self.phase {
@@ -260,6 +314,23 @@ impl Room {
                 Phase::Playing => "playing",
                 Phase::Over => "over",
             };
+            i.difficulty = self.difficulty.key();
+            i.people = people;
+            i.watchers = self.watchers.len();
+            i.peak = self.peak_people;
+            i.guests = self.seats.iter().filter(|s| s.guest && s.tx.is_some()).count() + self.watchers.iter().filter(|w| w.guest).count();
+            i.bots = self.seats.iter().filter(|s| s.bot).count();
+            i.turns = self.turns;
+            i.games = self.games_here;
+            i.started_at = if self.phase == Phase::Lobby { 0 } else { self.started_at };
+            if let Some(h) = self.seats.iter().find(|s| s.user_id == self.host_id) {
+                i.host = h.name.clone();
+            }
+            i.seats = self
+                .seats
+                .iter()
+                .map(|s| SeatInfo { name: s.name.clone(), pen: s.pen.clone(), bot: s.bot, guest: s.guest, online: s.here(), alive: s.alive, lives: s.lives, knocks: s.knocks })
+                .collect();
         }
     }
 
@@ -318,6 +389,7 @@ impl Room {
             "players": players,
             "turn": self.turn,
             "order": ring(self.seats.len()),
+            "watchers": self.watchers.len(),
             "simulating": self.sim,
             "left_ms": left,
             "bodies": bodies,
@@ -337,14 +409,14 @@ impl Room {
         self.bodies = game::new_board(&specs);
     }
 
-    fn push_state(&self) {
+    fn push_state(&mut self) {
         self.sync_info();
         self.broadcast(&self.state_json());
     }
 
-    fn sit(&mut self, user_id: i64, name: String, pen: String, avatar: Option<i64>, tx: Tx) {
+    fn sit(&mut self, user_id: i64, name: String, pen: String, avatar: Option<i64>, guest: bool, tx: Tx) {
         let lives = self.difficulty.lives();
-        self.seats.push(Seat { user_id, name, pen, avatar, tx: Some(tx), bot: false, reward: 0, alive: true, lives, knocks: 0, falls: 0, missed: 0, elim: 0 });
+        self.seats.push(Seat { user_id, name, pen, avatar, tx: Some(tx), bot: false, guest, reward: 0, alive: true, lives, knocks: 0, falls: 0, missed: 0, elim: 0 });
     }
 
     /// The host has gone: the first person still at the desk takes over, so start, rematch and the level never get
@@ -363,10 +435,11 @@ impl Room {
     async fn handle(&mut self, cmd: Cmd) -> bool {
         match cmd {
             Cmd::Close => {
+                self.close_reason = "admin";
                 self.broadcast(&json!({ "t": "closed" }).to_string());
                 return true;
             }
-            Cmd::Join { user_id, name, pen, avatar, tx } => {
+            Cmd::Join { user_id, name, pen, avatar, guest, tx } => {
                 self.idle_secs = 0;
                 self.watchers.retain(|w| w.user_id != user_id);
                 if let Some(seat) = self.seats.iter_mut().find(|s| s.user_id == user_id) {
@@ -377,16 +450,16 @@ impl Room {
                     }
                     self.refresh_lobby_board();
                 } else if self.phase == Phase::Lobby && self.seats.len() < MAX_SEATS {
-                    self.sit(user_id, name, pen, avatar, tx);
+                    self.sit(user_id, name, pen, avatar, guest, tx);
                     self.refresh_lobby_board();
                 } else if let Some(i) = (self.phase == Phase::Lobby).then(|| self.seats.iter().rposition(|s| s.bot)).flatten() {
                     // A full lobby with a computer in it: a person who followed the invite link takes the computer's chair.
                     let gone = self.seats.remove(i).name;
-                    self.sit(user_id, name.clone(), pen, avatar, tx);
+                    self.sit(user_id, name.clone(), pen, avatar, guest, tx);
                     self.refresh_lobby_board();
                     self.log(format!("{name} এসে {gone}-এর জায়গায় বসলেন।"));
                 } else {
-                    self.watchers.push(Watcher { user_id, name, pen, avatar, tx });
+                    self.watchers.push(Watcher { user_id, name, pen, avatar, guest, tx });
                 }
                 self.push_state();
             }
@@ -439,6 +512,7 @@ impl Room {
                     avatar: None,
                     tx: None,
                     bot: true,
+                    guest: false,
                     reward: 0,
                     alive: true,
                     lives,
@@ -481,7 +555,7 @@ impl Room {
                 // the free chairs, the same as if they had arrived a minute later.
                 for w in std::mem::take(&mut self.watchers) {
                     if self.seats.len() < MAX_SEATS {
-                        self.sit(w.user_id, w.name, w.pen, w.avatar, w.tx);
+                        self.sit(w.user_id, w.name, w.pen, w.avatar, w.guest, w.tx);
                     } else {
                         self.watchers.push(w);
                     }
@@ -550,6 +624,8 @@ impl Room {
         let specs: Vec<&crate::pens::Pen> = self.seats.iter().map(|s| crate::pens::find_or_default(&s.pen)).collect();
         self.bodies = game::new_board(&specs);
         self.turns = 0;
+        self.skips = 0;
+        self.started_at = db::now();
         self.phase = Phase::Playing;
         self.elim_counter = 0;
         self.sim = false;
@@ -576,6 +652,7 @@ impl Room {
             if self.connected() == 0 {
                 self.idle_secs += 1;
                 if self.idle_secs >= 60 {
+                    self.close_reason = "idle";
                     return true;
                 }
             } else {
@@ -652,12 +729,13 @@ impl Room {
     async fn time_up(&mut self) {
         let i = self.turn;
         self.seats[i].missed += 1;
+        self.skips += 1;
         let name = self.seats[i].name.clone();
         if self.seats[i].missed >= MAX_MISSED {
             self.knock_out(i);
             self.log(format!("{name} পরপর {MAX_MISSED} বার খেলেননি, তাই আউট।"));
             if self.seats.iter().filter(|s| s.alive).count() <= 1 {
-                self.finish_game().await;
+                self.finish_game("walkaway").await;
                 return;
             }
         } else {
@@ -738,14 +816,15 @@ impl Room {
             if alive > 1 {
                 self.log("অনেকক্ষণ কেউ পড়েনি! যার প্রাণ বেশি, তারপর যার কলম বেঞ্চের মাঝখানের কাছে, সে জিতল।".into());
             }
-            self.finish_game().await;
+            self.finish_game(if alive > 1 { "turns" } else { "knockout" }).await;
             return;
         }
         self.next_turn();
         self.push_state();
     }
 
-    async fn finish_game(&mut self) {
+    /// `why`: "knockout" (one left standing), "turns" (the turn limit), or "walkaway" (the rest stopped playing).
+    async fn finish_game(&mut self, why: &'static str) {
         // Survivors first: more lives left ranks higher, then nearer the middle of the desk. Then the fallen: the
         // last to go out ranks higher, and the first to go out is the looser.
         let centre = |i: usize| -> f32 {
@@ -769,12 +848,22 @@ impl Room {
         let results: Vec<PlayerResult> = order
             .iter()
             .enumerate()
-            .map(|(rank, &i)| PlayerResult {
-                user_id: self.seats[i].user_id,
-                name: self.seats[i].name.clone(),
-                coins: self.seats[i].reward,
-                rank: rank as i64 + 1,
-                looser: Some(self.seats[i].user_id) == looser_id,
+            .map(|(rank, &i)| {
+                let s = &self.seats[i];
+                PlayerResult {
+                    user_id: s.user_id,
+                    name: s.name.clone(),
+                    coins: s.reward,
+                    rank: rank as i64 + 1,
+                    looser: Some(s.user_id) == looser_id,
+                    seat: i as i64,
+                    pen: s.pen.clone(),
+                    knocks: s.knocks as i64,
+                    falls: s.falls as i64,
+                    lives: s.lives as i64,
+                    bot: s.bot,
+                    guest: s.guest,
+                }
             })
             .collect();
         self.results = json!(order
@@ -790,7 +879,18 @@ impl Room {
                 })
             })
             .collect::<Vec<_>>());
-        db::save_game(&self.state.pool, &self.code, &results).await;
+        let record = db::GameRecord {
+            code: &self.code,
+            room_id: self.log_id,
+            difficulty: self.difficulty.key(),
+            started_at: self.started_at,
+            turns: self.turns as i64,
+            skips: self.skips as i64,
+            host_id: self.host_id,
+            end_reason: why,
+        };
+        db::save_game(&self.state.pool, &record, &results).await;
+        self.games_here += 1;
         self.phase = Phase::Over;
         self.sim = false;
         self.bot_think = None;

@@ -1,6 +1,7 @@
 'use client'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, getToken, setToken, wsUrl } from '../../lib/api'
+import { LiveCard } from '../../lib/live'
 import { isMuted, setMuted, sfx } from '../../lib/sound'
 import { COLORS, DESKS, SIZE, drawAim, drawBoard, drawBody, drawTurnHint } from './draw'
 import { DifficultyPicker, EndOverlay, LEVELS, PlayerCard } from './panels'
@@ -377,6 +378,12 @@ export default function Game({ code, vsBot = false }) {
               </div>
             )}
           </div>
+
+          {state && (
+            <div className="card">
+              <LiveCard room={{ seated: seats.length, bots: seats.filter((p) => p.bot).length, watchers: state.watchers || 0 }} />
+            </div>
+          )}
 
           <div className="card">
             <h3>বেঞ্চ</h3>

@@ -48,6 +48,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/rooms", post(create_room))
         .route("/api/rooms/:code", get(room_exists))
         .route("/api/leaderboard", get(leaderboard))
+        .route("/api/live", get(live))
         .route("/api/shop", get(shop))
         .route("/api/shop/buy", post(shop_buy))
         .route("/api/shop/select", post(shop_select))
@@ -58,6 +59,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/admin/rooms", get(admin_rooms))
         .route("/api/admin/rooms/:code", delete(admin_room_close))
         .route("/api/admin/games", get(admin_games))
+        .route("/api/admin/room-history", get(admin_room_history))
         .route("/ws/:code", get(ws_upgrade))
         .with_state(state)
 }
@@ -136,6 +138,8 @@ async fn register(State(st): St, headers: HeaderMap, Json(b): Json<RegisterBody>
 
 #[derive(Deserialize)]
 struct GuestBody {
+    /// Optional: guest mode from the home page asks only for a name. When one is given it must be a real address.
+    #[serde(default)]
     email: String,
     name: String,
 }
@@ -144,13 +148,17 @@ fn client_ip(h: &HeaderMap) -> String {
     h.get("x-forwarded-for").and_then(|v| v.to_str().ok()).and_then(|v| v.split(',').next()).map(|s| s.trim().to_string()).unwrap_or_else(|| "local".into())
 }
 
-/// Someone opened an invite link: name and email is all it takes to sit down at the board. The account has no password
-/// (it cannot be logged into from elsewhere) until they choose to save it from the profile page.
+/// Guest mode: a name (and, from an invite link, an email) is all it takes to sit down at the board. The account has
+/// no password (it cannot be logged into from elsewhere) until they choose to save it from the profile page.
 async fn guest_join(State(st): St, headers: HeaderMap, Json(b): Json<GuestBody>) -> Res<Value> {
     let name = b.name.trim().to_string();
-    let email = match email::check(&b.email) {
-        Ok(e) => e,
-        Err(why) => return Err(ApiErr(StatusCode::BAD_REQUEST, why)),
+    let email = if b.email.trim().is_empty() {
+        String::new()
+    } else {
+        match email::check(&b.email) {
+            Ok(e) => e,
+            Err(why) => return Err(ApiErr(StatusCode::BAD_REQUEST, why)),
+        }
     };
     if name.chars().count() < 2 || name.chars().count() > 24 {
         return err(StatusCode::BAD_REQUEST, "নাম ২ থেকে ২৪ অক্ষরের হতে হবে");
@@ -159,7 +167,11 @@ async fn guest_join(State(st): St, headers: HeaderMap, Json(b): Json<GuestBody>)
     if !st.limits.allow(&format!("guest:{}", client_ip(&headers)), 40, Duration::from_secs(600)) {
         return err(StatusCode::TOO_MANY_REQUESTS, "এখান থেকে অনেক বেশি নতুন খেলোয়াড় এসেছে। কয়েক মিনিট পর আবার চেষ্টা করুন।");
     }
-    let taken: Option<i64> = sqlx::query_scalar(db::q("SELECT id FROM users WHERE email = ? AND guest = 0")).bind(&email).fetch_optional(&st.pool).await.ok().flatten();
+    let taken: Option<i64> = if email.is_empty() {
+        None
+    } else {
+        sqlx::query_scalar(db::q("SELECT id FROM users WHERE email = ? AND guest = 0")).bind(&email).fetch_optional(&st.pool).await.ok().flatten()
+    };
     if taken.is_some() {
         return err(StatusCode::CONFLICT, "এই ইমেইলে আগেই অ্যাকাউন্ট আছে। লগইন করুন।");
     }
@@ -314,6 +326,37 @@ async fn leaderboard(State(st): St) -> Res<Value> {
         .into_iter()
         .map(|(id, n, w, p, av)| json!({ "id": id, "name": n, "wins": w, "played": p, "avatar": if av > 0 { Some(av) } else { None } }))
         .collect::<Vec<_>>())))
+}
+
+/// The live counter shown in every room and on the home page. Public: it is only totals.
+async fn live(State(st): St) -> Res<Value> {
+    let (mut rooms, mut matches, mut playing, mut online, mut guests, mut bots) = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+    {
+        let map = st.rooms.lock().await;
+        for h in map.values() {
+            let Ok(i) = h.info.lock() else { continue };
+            rooms += 1;
+            online += i.people;
+            guests += i.guests;
+            if i.phase == "playing" {
+                matches += 1;
+                playing += i.seats.iter().filter(|s| !s.bot && s.online).count();
+                bots += i.bots;
+            }
+        }
+    }
+    let cached = st.day_games.lock().ok().and_then(|c| *c).filter(|(at, _)| at.elapsed() < Duration::from_secs(30)).map(|(_, n)| n);
+    let day = match cached {
+        Some(n) => n,
+        None => {
+            let n: i64 = sqlx::query_scalar(db::q("SELECT COUNT(*) FROM games WHERE finished_at > ?")).bind(db::now() - 86_400).fetch_one(&st.pool).await.unwrap_or(0);
+            if let Ok(mut c) = st.day_games.lock() {
+                *c = Some((Instant::now(), n));
+            }
+            n
+        }
+    };
+    Ok(Json(json!({ "online": online, "playing": playing, "guests": guests, "bots": bots, "rooms": rooms, "matches": matches, "gamesDay": day })))
 }
 
 // ---------------------------------------------------------------- profile + avatar
@@ -475,18 +518,81 @@ async fn shop_select(State(st): St, headers: HeaderMap, Json(b): Json<PenBody>) 
 
 // ---------------------------------------------------------------- admin
 
-async fn admin_stats(State(st): St, headers: HeaderMap) -> Res<Value> {
+#[derive(Deserialize)]
+struct StatsQuery {
+    /// The browser's `Date.getTimezoneOffset()` in minutes, so "a day" in the charts is the admin's own day.
+    tz: Option<i64>,
+}
+
+async fn admin_stats(State(st): St, headers: HeaderMap, Query(q): Query<StatsQuery>) -> Res<Value> {
     need_admin(&st, &headers).await?;
-    let c = |q: &'static str| {
-        let pool = st.pool.clone();
-        async move { sqlx::query_scalar::<_, i64>(q).fetch_one(&pool).await.unwrap_or(0) }
+    let pool = &st.pool;
+    let one = |sql: &'static str| async move { sqlx::query_scalar::<_, i64>(db::q(sql)).fetch_one(pool).await.unwrap_or(0) };
+    let since = |sql: &'static str, t: i64| async move { sqlx::query_scalar::<_, i64>(db::q(sql)).bind(t).fetch_one(pool).await.unwrap_or(0) };
+    let pairs = |sql: &'static str| async move { sqlx::query_as::<_, (String, i64)>(db::q(sql)).fetch_all(pool).await.unwrap_or_default() };
+    let day_ago = db::now() - 86_400;
+
+    // Local days: shift Unix time by the admin's offset before dividing into days.
+    let shift = -q.tz.unwrap_or(0).clamp(-14 * 60, 14 * 60) * 60;
+    let today = (db::now() + shift).div_euclid(86_400);
+    let first = today - 13;
+    let per_day = |sql: &'static str| async move {
+        sqlx::query_as::<_, (i64, i64)>(db::q(sql)).bind(shift).bind(first * 86_400 - shift).fetch_all(pool).await.unwrap_or_default()
     };
-    let rooms = st.rooms.lock().await.len();
+    let games_by_day = per_day("SELECT (finished_at + ?) / 86400 AS d, COUNT(*) FROM games WHERE finished_at >= ? GROUP BY d").await;
+    let users_by_day = per_day("SELECT (created_at + ?) / 86400 AS d, COUNT(*) FROM users WHERE created_at >= ? GROUP BY d").await;
+    let days: Vec<Value> = (first..=today)
+        .map(|d| {
+            let g = games_by_day.iter().find(|r| r.0 == d).map_or(0, |r| r.1);
+            let u = users_by_day.iter().find(|r| r.0 == d).map_or(0, |r| r.1);
+            json!({ "day": d * 86_400 - shift, "games": g, "users": u })
+        })
+        .collect();
+
+    let pens: Vec<(String, i64, i64)> = sqlx::query_as(db::q(
+        "SELECT pen, COUNT(*), CAST(COALESCE(SUM(CASE WHEN rank = 1 THEN 1 ELSE 0 END), 0) AS BIGINT) FROM game_players WHERE bot = 0 AND pen <> '' GROUP BY pen ORDER BY COUNT(*) DESC",
+    ))
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    let (mut online, mut playing, mut guests_online) = (0usize, 0usize, 0usize);
+    let live_rooms = {
+        let map = st.rooms.lock().await;
+        for h in map.values() {
+            if let Ok(i) = h.info.lock() {
+                online += i.people;
+                guests_online += i.guests;
+                if i.phase == "playing" {
+                    playing += i.seats.iter().filter(|s| !s.bot && s.online).count();
+                }
+            }
+        }
+        map.len()
+    };
+
     Ok(Json(json!({
-        "users": c("SELECT COUNT(*) FROM users").await,
-        "blocked": c("SELECT COUNT(*) FROM users WHERE blocked = 1").await,
-        "games": c("SELECT COUNT(*) FROM games").await,
-        "liveRooms": rooms,
+        "users": one("SELECT COUNT(*) FROM users WHERE guest = 0").await,
+        "guests": one("SELECT COUNT(*) FROM users WHERE guest = 1").await,
+        "blocked": one("SELECT COUNT(*) FROM users WHERE blocked = 1").await,
+        "games": one("SELECT COUNT(*) FROM games").await,
+        "gamesDay": since("SELECT COUNT(*) FROM games WHERE finished_at > ?", day_ago).await,
+        "newUsersDay": since("SELECT COUNT(*) FROM users WHERE created_at > ?", day_ago).await,
+        "roomsOpened": one("SELECT COUNT(*) FROM rooms_log").await,
+        "vsComputer": one("SELECT COUNT(*) FROM games WHERE bots > 0").await,
+        "withGuests": one("SELECT COUNT(*) FROM games WHERE guests > 0").await,
+        "avgTurns": one("SELECT CAST(COALESCE(AVG(turns), 0) AS BIGINT) FROM games WHERE turns > 0").await,
+        "avgSecs": one("SELECT CAST(COALESCE(AVG(finished_at - started_at), 0) AS BIGINT) FROM games WHERE started_at > 0").await,
+        "coinsPaid": one("SELECT CAST(COALESCE(SUM(coins), 0) AS BIGINT) FROM game_players").await,
+        "byLevel": pairs("SELECT difficulty, COUNT(*) FROM games GROUP BY difficulty").await,
+        "byEnd": pairs("SELECT end_reason, COUNT(*) FROM games GROUP BY end_reason").await,
+        "bySize": sqlx::query_as::<_, (i64, i64)>(db::q("SELECT players, COUNT(*) FROM games WHERE players > 0 GROUP BY players ORDER BY players")).fetch_all(pool).await.unwrap_or_default(),
+        "pens": pens.into_iter().map(|(p, n, w)| json!({ "pen": p, "games": n, "wins": w })).collect::<Vec<_>>(),
+        "days": days,
+        "liveRooms": live_rooms,
+        "online": online,
+        "playing": playing,
+        "guestsOnline": guests_online,
     })))
 }
 
@@ -538,13 +644,8 @@ async fn admin_user_delete(State(st): St, headers: HeaderMap, Path(id): Path<i64
 async fn admin_rooms(State(st): St, headers: HeaderMap) -> Res<Value> {
     need_admin(&st, &headers).await?;
     let rooms = st.rooms.lock().await;
-    let list: Vec<Value> = rooms
-        .values()
-        .map(|h| {
-            let i = h.info.lock().unwrap().clone();
-            json!({ "code": i.code, "host": i.host, "players": i.players, "phase": i.phase, "createdAt": i.created_at })
-        })
-        .collect();
+    let mut list: Vec<room::RoomInfo> = rooms.values().filter_map(|h| h.info.lock().ok().map(|i| i.clone())).collect();
+    list.sort_by_key(|i| std::cmp::Reverse(i.created_at));
     Ok(Json(json!(list)))
 }
 
@@ -556,20 +657,75 @@ async fn admin_room_close(State(st): St, headers: HeaderMap, Path(code): Path<St
     Ok(Json(json!({ "ok": true })))
 }
 
+/// The last 200 matches, each with every player's line: place, pen, knocks, falls, lives left, coins.
 async fn admin_games(State(st): St, headers: HeaderMap) -> Res<Value> {
     need_admin(&st, &headers).await?;
-    let rows: Vec<(i64, String, i64, String, String)> = sqlx::query_as(
-        db::q("SELECT g.id, g.code, g.finished_at,
-            COALESCE((SELECT name FROM game_players p WHERE p.game_id = g.id AND p.rank = 1 LIMIT 1), ''),
-            COALESCE((SELECT name FROM game_players p WHERE p.game_id = g.id AND p.looser = 1 LIMIT 1), '')
-         FROM games g ORDER BY g.id DESC LIMIT 100"),
-    )
+    // No NULLs reach Rust: sqlx's Any driver cannot decode NULL into an Option, so missing values come back as 0.
+    type GameRow = (i64, String, i64, i64, String, i64, i64, String, i64, i64, i64, i64);
+    let games: Vec<GameRow> = sqlx::query_as(db::q(
+        "SELECT id, code, finished_at, started_at, difficulty, turns, skips, end_reason, players, bots, guests, COALESCE(room_id, 0) FROM games ORDER BY id DESC LIMIT 200",
+    ))
     .fetch_all(&st.pool)
     .await
+    .map_err(|e| eprintln!("admin games: {e}"))
     .unwrap_or_default();
+    let first = games.last().map_or(0, |g| g.0);
+    type PlayerRow = (i64, i64, String, i64, i64, i64, i64, String, i64, i64, i64, i64, i64);
+    let players: Vec<PlayerRow> = sqlx::query_as(db::q(
+        "SELECT game_id, user_id, name, coins, rank, looser, seat, pen, knocks, falls, lives, bot, guest FROM game_players WHERE game_id >= ? ORDER BY game_id, rank",
+    ))
+    .bind(first)
+    .fetch_all(&st.pool)
+    .await
+    .map_err(|e| eprintln!("admin game players: {e}"))
+    .unwrap_or_default();
+    Ok(Json(json!(games
+        .into_iter()
+        .map(|(id, code, fin, start, level, turns, skips, end, n, bots, guests, room_id)| {
+            let list: Vec<Value> = players
+                .iter()
+                .filter(|p| p.0 == id)
+                .map(|p| json!({ "id": p.1, "name": p.2, "coins": p.3, "rank": p.4, "looser": p.5 == 1, "seat": p.6, "pen": p.7, "knocks": p.8, "falls": p.9, "lives": p.10, "bot": p.11 == 1, "guest": p.12 == 1 }))
+                .collect();
+            let winner = list.iter().find(|p| p["rank"] == 1).map(|p| p["name"].clone());
+            let looser = list.iter().find(|p| p["looser"] == true).map(|p| p["name"].clone());
+            json!({
+                "id": id, "code": code, "finishedAt": fin, "startedAt": start, "secs": if start > 0 { fin - start } else { 0 },
+                "difficulty": level, "turns": turns, "skips": skips, "end": end,
+                "size": if n > 0 { n } else { list.len() as i64 }, "bots": bots, "guests": guests, "roomId": if room_id > 0 { Some(room_id) } else { None },
+                "winner": winner, "looser": looser, "players": list,
+            })
+        })
+        .collect::<Vec<_>>())))
+}
+
+/// Every room ever opened (newest 200), open or closed, with how many matches it saw.
+async fn admin_room_history(State(st): St, headers: HeaderMap) -> Res<Value> {
+    need_admin(&st, &headers).await?;
+    // Still-open rooms have no closed_at; COALESCE because sqlx's Any driver cannot decode NULL into an Option.
+    type Row = (i64, String, String, i64, i64, String, i64, i64, i64);
+    let rows: Vec<Row> = sqlx::query_as(db::q(
+        "SELECT r.id, r.code, r.host_name, r.created_at, COALESCE(r.closed_at, 0), COALESCE(r.close_reason, ''), (SELECT COUNT(*) FROM games g WHERE g.room_id = r.id), r.peak_people, r.used_bots FROM rooms_log r ORDER BY r.id DESC LIMIT 200",
+    ))
+    .fetch_all(&st.pool)
+    .await
+    .map_err(|e| eprintln!("room history: {e}"))
+    .unwrap_or_default();
+    // A room still open has not written its peak yet: take it from the live room.
+    let live: HashMap<String, (usize, usize)> = st.rooms.lock().await.iter().filter_map(|(c, h)| h.info.lock().ok().map(|i| (c.clone(), (i.peak, i.bots)))).collect();
     Ok(Json(json!(rows
         .into_iter()
-        .map(|(id, code, at, w, l)| json!({ "id": id, "code": code, "finishedAt": at, "winner": if w.is_empty() { None } else { Some(w) }, "looser": if l.is_empty() { None } else { Some(l) } }))
+        .map(|(id, code, host, opened, closed, why, games, peak, bots)| {
+            let (peak, bots) = match (closed, live.get(&code)) {
+                (0, Some(&(p, b))) => (p as i64, if b > 0 { 1 } else { bots }),
+                _ => (peak, bots),
+            };
+            json!({
+            "id": id, "code": code, "host": host, "createdAt": opened,
+            "closedAt": if closed > 0 { Some(closed) } else { None }, "closeReason": if why.is_empty() { None } else { Some(why) },
+            "games": games, "peak": peak, "bots": bots == 1,
+        })
+        })
         .collect::<Vec<_>>())))
 }
 
@@ -603,7 +759,7 @@ async fn play(socket: WebSocket, user: User, handle: room::RoomHandle) {
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = unbounded_channel::<String>();
     let mine = tx.clone(); // names this connection when it closes, see Cmd::Leave
-    if handle.tx.send(Cmd::Join { user_id: user.id, name: user.name.clone(), pen: user.pen.clone(), avatar: if user.avatar_at > 0 { Some(user.avatar_at) } else { None }, tx }).is_err() {
+    if handle.tx.send(Cmd::Join { user_id: user.id, name: user.name.clone(), pen: user.pen.clone(), avatar: if user.avatar_at > 0 { Some(user.avatar_at) } else { None }, guest: user.guest == 1, tx }).is_err() {
         let _ = sink.send(Message::Text(json!({ "t": "closed" }).to_string())).await;
         return;
     }

@@ -6,9 +6,10 @@ The childhood pen-flicking game from school benches, live in the browser. 2 to 4
 
 - **Server:** Rust (axum, WebSocket, SQLite). It owns all the physics and the rules, so nobody can cheat from the browser.
 - **Web:** Next.js, exported as plain static files and served by the same Rust process. No Node server in production.
-- **Accounts:** email, name and password only. Players invite friends with a room link or a 5-letter code.
+- **Accounts:** email, name and password, or **guest mode** with just a name. Players invite friends with a room link or a 5-letter code.
+- **Live counter:** every room and the home page show how many people are playing, online and in guest mode right now.
 - **Profile:** `/profile/` lets a player add a picture (cropped and shrunk in the browser, stored in the database), rename and change password.
-- **Admin:** `/admin/` has an overview, a searchable player list (block, make admin, give or take coins, remove a picture, delete), live rooms (close) and recent games.
+- **Admin:** `/admin/` has full statistics (live numbers, totals, matches per day, levels, pens), a searchable player list (block, make admin, give or take coins, remove a picture, delete), every open room seat by seat with the history of all rooms, and the complete record of every match.
 - **Levels:** easy, medium and hard, picked by the host (lives, flick speed, turn clock and coins all change).
 - **Computer players:** play alone against the computer, or fill empty chairs. It aims with the real physics and misses more on easier levels.
 - **Desk and sound:** five desk looks (school bench, slate, green felt, ocean, notebook page) and synthesized sound effects, both chosen per browser.

@@ -21,6 +21,8 @@ pub struct AppState {
     pub rooms: tokio::sync::Mutex<HashMap<String, room::RoomHandle>>,
     /// Every rate limit in one place: login attempts, sign-ups, guest joins, rooms, uploads.
     pub limits: guard::Limiter,
+    /// Games finished in the last 24 hours, for the live counter. Counted at most every 30 seconds.
+    pub day_games: std::sync::Mutex<Option<(std::time::Instant, i64)>>,
 }
 
 async fn seed_admin(pool: &AnyPool) {
@@ -54,7 +56,7 @@ async fn main() {
     db::migrate(&pool).await;
     seed_admin(&pool).await;
 
-    let state = Arc::new(AppState { pool, rooms: Default::default(), limits: Default::default() });
+    let state = Arc::new(AppState { pool, rooms: Default::default(), limits: Default::default(), day_games: Default::default() });
     let dir = std::env::var("STATIC_DIR").unwrap_or_else(|_| "../web/out".into());
 
     // The same process serves the game page, so there is one thing to host and no cross-site setup.

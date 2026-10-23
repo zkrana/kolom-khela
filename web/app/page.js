@@ -1,6 +1,7 @@
 'use client'
 import { useCallback, useEffect, useState } from 'react'
 import { api, setToken } from '../lib/api'
+import { LiveCard } from '../lib/live'
 import { Avatar, Logo, Nav } from '../lib/ui'
 import { PEN_NAMES } from '../lib/pens'
 import { useMe } from '../lib/useMe'
@@ -17,7 +18,7 @@ function AuthForm({ onDone }) {
     setBusy(true)
     setError('')
     try {
-      const body = mode === 'login' ? { email: f.email, password: f.password } : f
+      const body = mode === 'login' ? { email: f.email, password: f.password } : mode === 'guest' ? { name: f.name } : f
       const d = await api(`/api/auth/${mode}`, { method: 'POST', body })
       setToken(d.token)
       onDone()
@@ -34,14 +35,24 @@ function AuthForm({ onDone }) {
         <div>
           <div className="row" style={{ marginBottom: 10 }}><Logo size={40} /><h1 style={{ margin: 0, fontSize: 38 }}>কলম খেলা</h1></div>
           <p style={{ fontSize: 18, margin: '0 0 12px' }}>ক্লাসের বেঞ্চের সেই কলম খেলা, এবার অনলাইনে বন্ধুদের সাথে।</p>
-          <p className="muted">টোকা দিয়ে অন্যের কলম বেঞ্চ থেকে ফেলুন, কয়েন জিতুন, ভালো কলম জমান। একদম ফ্রি। শুধু একটা ইমেইল, নাম আর পাসওয়ার্ড লাগবে।</p>
+          <p className="muted">টোকা দিয়ে অন্যের কলম বেঞ্চ থেকে ফেলুন, কয়েন জিতুন, ভালো কলম জমান। একদম ফ্রি। তাড়া থাকলে শুধু নাম দিয়ে গেস্ট হিসেবে খেলুন।</p>
+          <div className="card" style={{ marginTop: 16 }}><LiveCard compact /></div>
         </div>
         <div className="card">
           <div className="tabs">
             <button type="button" className={mode === 'login' ? 'on' : ''} onClick={() => setMode('login')}>লগইন</button>
             <button type="button" className={mode === 'register' ? 'on' : ''} onClick={() => setMode('register')}>সাইন আপ</button>
+            <button type="button" className={mode === 'guest' ? 'on' : ''} onClick={() => setMode('guest')}>গেস্ট</button>
           </div>
           <form onSubmit={submit}>
+            {mode === 'guest' ? (
+              <>
+                <label htmlFor="gname">আপনার নাম (অন্য খেলোয়াড়রা দেখবে)</label>
+                <input id="gname" required minLength={2} maxLength={24} autoComplete="nickname" value={f.name} onChange={set('name')} />
+                <p className="muted" style={{ fontSize: 13, margin: '10px 0 0' }}>ইমেইল বা পাসওয়ার্ড লাগবে না। কয়েন আর কলম এই ব্রাউজারে থাকবে; রাখতে চাইলে পরে প্রোফাইল থেকে অ্যাকাউন্ট সেভ করুন।</p>
+              </>
+            ) : (
+              <>
             <label htmlFor="email">ইমেইল</label>
             <input id="email" type="email" required autoComplete="email" value={f.email} onChange={set('email')} />
             {mode === 'register' && (
@@ -52,9 +63,11 @@ function AuthForm({ onDone }) {
             )}
             <label htmlFor="pw">পাসওয়ার্ড</label>
             <input id="pw" type="password" required minLength={6} autoComplete={mode === 'login' ? 'current-password' : 'new-password'} value={f.password} onChange={set('password')} />
+              </>
+            )}
             {error && <p className="err" role="alert">{error}</p>}
             <div style={{ marginTop: 16 }}>
-              <button disabled={busy} style={{ width: '100%' }}>{busy ? 'একটু অপেক্ষা করুন...' : mode === 'login' ? 'লগইন' : 'অ্যাকাউন্ট খুলুন'}</button>
+              <button disabled={busy} style={{ width: '100%' }}>{busy ? 'একটু অপেক্ষা করুন...' : mode === 'login' ? 'লগইন' : mode === 'guest' ? 'গেস্ট হিসেবে খেলুন' : 'অ্যাকাউন্ট খুলুন'}</button>
             </div>
           </form>
         </div>
@@ -131,6 +144,7 @@ function Lobby({ me, reload }) {
           </ol>
         </div>
       </div>
+      <div className="card" style={{ marginTop: 16 }}><LiveCard compact /></div>
       <div className="card" style={{ marginTop: 16 }}>
         <h2>সেরা খেলোয়াড়</h2>
         {board.length === 0 ? <p className="muted">এখনো কোনো খেলা শেষ হয়নি। আপনিই প্রথম হোন।</p> : (

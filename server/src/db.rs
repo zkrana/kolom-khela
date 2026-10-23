@@ -106,6 +106,20 @@ pub async fn migrate(pool: &AnyPool) {
             looser BIGINT NOT NULL DEFAULT 0
         )".to_string(),
         "CREATE INDEX IF NOT EXISTS idx_game_players_user ON game_players(user_id)".to_string(),
+        // One row per room ever opened, kept after it closes: who opened it, how long it lived, how many matches.
+        format!("CREATE TABLE IF NOT EXISTS rooms_log (
+            id {pk},
+            code TEXT NOT NULL,
+            host_id BIGINT NOT NULL,
+            host_name TEXT NOT NULL,
+            created_at BIGINT NOT NULL,
+            closed_at BIGINT,
+            close_reason TEXT,
+            games BIGINT NOT NULL DEFAULT 0,
+            peak_people BIGINT NOT NULL DEFAULT 0,
+            used_bots BIGINT NOT NULL DEFAULT 0
+        )"),
+        "CREATE INDEX IF NOT EXISTS idx_games_finished ON games(finished_at)".to_string(),
         format!("CREATE TABLE IF NOT EXISTS avatars (
             user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
             mime TEXT NOT NULL,
@@ -123,9 +137,29 @@ pub async fn migrate(pool: &AnyPool) {
         "ALTER TABLE users ADD COLUMN pens TEXT NOT NULL DEFAULT 'econo'",
         "ALTER TABLE users ADD COLUMN guest BIGINT NOT NULL DEFAULT 0",
         "ALTER TABLE users ADD COLUMN contact TEXT NOT NULL DEFAULT ''",
+        // Full match records for the admin statistics.
+        "ALTER TABLE games ADD COLUMN room_id BIGINT",
+        "ALTER TABLE games ADD COLUMN difficulty TEXT NOT NULL DEFAULT 'medium'",
+        "ALTER TABLE games ADD COLUMN started_at BIGINT NOT NULL DEFAULT 0",
+        "ALTER TABLE games ADD COLUMN turns BIGINT NOT NULL DEFAULT 0",
+        "ALTER TABLE games ADD COLUMN skips BIGINT NOT NULL DEFAULT 0",
+        "ALTER TABLE games ADD COLUMN host_id BIGINT",
+        "ALTER TABLE games ADD COLUMN end_reason TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE games ADD COLUMN players BIGINT NOT NULL DEFAULT 0",
+        "ALTER TABLE games ADD COLUMN bots BIGINT NOT NULL DEFAULT 0",
+        "ALTER TABLE games ADD COLUMN guests BIGINT NOT NULL DEFAULT 0",
+        "ALTER TABLE game_players ADD COLUMN seat BIGINT NOT NULL DEFAULT 0",
+        "ALTER TABLE game_players ADD COLUMN pen TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE game_players ADD COLUMN knocks BIGINT NOT NULL DEFAULT 0",
+        "ALTER TABLE game_players ADD COLUMN falls BIGINT NOT NULL DEFAULT 0",
+        "ALTER TABLE game_players ADD COLUMN lives BIGINT NOT NULL DEFAULT 0",
+        "ALTER TABLE game_players ADD COLUMN bot BIGINT NOT NULL DEFAULT 0",
+        "ALTER TABLE game_players ADD COLUMN guest BIGINT NOT NULL DEFAULT 0",
     ] {
         let _ = sqlx::query(q(s)).execute(pool).await;
     }
+    // Rooms live in memory, so any room still open in the records died with the previous process.
+    let _ = sqlx::query(q("UPDATE rooms_log SET closed_at = ?, close_reason = 'restart' WHERE closed_at IS NULL")).bind(now()).execute(pool).await;
 }
 
 /// Coins for a win (the amount depends on the difficulty), with a daily cap so two accounts cannot farm
@@ -151,30 +185,94 @@ pub struct PlayerResult {
     pub coins: i64,
     pub rank: i64,
     pub looser: bool,
+    pub seat: i64,
+    pub pen: String,
+    pub knocks: i64,
+    pub falls: i64,
+    pub lives: i64,
+    pub bot: bool,
+    pub guest: bool,
 }
 
-pub async fn save_game(pool: &AnyPool, code: &str, results: &[PlayerResult]) {
+/// The match itself, beside the per-player rows.
+pub struct GameRecord<'a> {
+    pub code: &'a str,
+    pub room_id: Option<i64>,
+    pub difficulty: &'a str,
+    pub started_at: i64,
+    pub turns: i64,
+    pub skips: i64,
+    pub host_id: i64,
+    pub end_reason: &'a str,
+}
+
+pub async fn save_game(pool: &AnyPool, g: &GameRecord<'_>, results: &[PlayerResult]) {
     let winner = results.iter().find(|r| r.rank == 1).map(|r| r.user_id);
     let loser = results.iter().find(|r| r.looser).map(|r| r.user_id);
-    let Ok(gid) = sqlx::query_scalar::<_, i64>(q("INSERT INTO games (code, finished_at, winner_id, loser_id) VALUES (?, ?, ?, ?) RETURNING id"))
-        .bind(code)
+    let bots = results.iter().filter(|r| r.bot).count() as i64;
+    let guests = results.iter().filter(|r| r.guest).count() as i64;
+    let Ok(gid) = sqlx::query_scalar::<_, i64>(q("INSERT INTO games (code, finished_at, winner_id, loser_id, room_id, difficulty, started_at, turns, skips, host_id, end_reason, players, bots, guests)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id"))
+        .bind(g.code)
         .bind(now())
         .bind(winner)
         .bind(loser)
+        .bind(g.room_id)
+        .bind(g.difficulty)
+        .bind(g.started_at)
+        .bind(g.turns)
+        .bind(g.skips)
+        .bind(g.host_id)
+        .bind(g.end_reason)
+        .bind(results.len() as i64)
+        .bind(bots)
+        .bind(guests)
         .fetch_one(pool)
         .await
     else {
         return;
     };
     for r in results {
-        let _ = sqlx::query(q("INSERT INTO game_players (game_id, user_id, name, coins, rank, looser) VALUES (?, ?, ?, ?, ?, ?)"))
+        let _ = sqlx::query(q("INSERT INTO game_players (game_id, user_id, name, coins, rank, looser, seat, pen, knocks, falls, lives, bot, guest) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"))
             .bind(gid)
             .bind(r.user_id)
             .bind(&r.name)
             .bind(r.coins)
             .bind(r.rank)
             .bind(r.looser as i64)
+            .bind(r.seat)
+            .bind(&r.pen)
+            .bind(r.knocks)
+            .bind(r.falls)
+            .bind(r.lives)
+            .bind(r.bot as i64)
+            .bind(r.guest as i64)
             .execute(pool)
             .await;
     }
+}
+
+/// A room has opened. Returns its row id, which the room keeps so it can close the record later.
+pub async fn room_opened(pool: &AnyPool, code: &str, host_id: i64, host_name: &str) -> Option<i64> {
+    sqlx::query_scalar::<_, i64>(q("INSERT INTO rooms_log (code, host_id, host_name, created_at) VALUES (?, ?, ?, ?) RETURNING id"))
+        .bind(code)
+        .bind(host_id)
+        .bind(host_name)
+        .bind(now())
+        .fetch_one(pool)
+        .await
+        .ok()
+}
+
+/// `reason`: "idle" (nobody left for a minute), "admin" (closed from the admin page) or "gone" (the server stopped it).
+pub async fn room_closed(pool: &AnyPool, id: i64, reason: &str, games: i64, peak_people: i64, used_bots: bool) {
+    let _ = sqlx::query(q("UPDATE rooms_log SET closed_at = ?, close_reason = ?, games = ?, peak_people = ?, used_bots = ? WHERE id = ?"))
+        .bind(now())
+        .bind(reason)
+        .bind(games)
+        .bind(peak_people)
+        .bind(used_bots as i64)
+        .bind(id)
+        .execute(pool)
+        .await;
 }

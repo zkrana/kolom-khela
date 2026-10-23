@@ -50,7 +50,7 @@ server/                     Rust, the backend and the game
   src/guard.rs              rate limiter, password rules, security headers, session lifetime
   src/email.rs              the email address filter (typos, test domains, throwaway services)
 web/                        Next.js 16, exported to static files in web/out
-  app/page.js               home: sign in / sign up, lobby (new game, vs computer, join by code), leaderboard
+  app/page.js               home: sign in / sign up / guest, lobby (new game, vs computer, join by code), live counter, leaderboard
   app/room/page.js          reads ?code= (and ?bot=1) and mounts Game
   app/room/Game.js          the match screen: WebSocket, canvas loop, aiming, lobby panel, prompts
   app/room/draw.js          everything drawn on the canvas: desks, pens, aim preview, turn hint
@@ -59,6 +59,8 @@ web/                        Next.js 16, exported to static files in web/out
   lib/api.js                fetch wrapper + token storage + WebSocket URL
   lib/pens.js               how each pen looks (colours, cap, rings); the physics sizes come from the server
   lib/sound.js              synthesized sound effects (Web Audio, no files)
+  lib/live.js               the live counter card (polls /api/live)
+  app/admin/page.js         admin: overview statistics and chart, players, live rooms + room history, every match
 Dockerfile                  builds web, builds server, ships both in one small image
 ```
 
@@ -143,7 +145,7 @@ Anything not allowed (wrong person, wrong phase, not your turn) is silently igno
 
 | `t` | Meaning |
 |---|---|
-| `state` | Full snapshot: `phase`, `host`, `difficulty`, `players[]` (seat, id, name, pen, avatar, alive, online, bot, lives, knocks, falls), `turn`, `order` (turn order of seats), `simulating`, `left_ms` (turn clock), `bodies[]` (pens on the desk), `results` (after the end), `reward`, `maxLives`, `turnSecs`, and `shot` (the physics numbers the aim preview needs) |
+| `state` | Full snapshot: `phase`, `host`, `difficulty`, `players[]` (seat, id, name, pen, avatar, alive, online, bot, lives, knocks, falls), `turn`, `order` (turn order of seats), `simulating`, `left_ms` (turn clock), `bodies[]` (pens on the desk), `results` (after the end), `reward`, `maxLives`, `turnSecs`, `watchers` (how many are watching), and `shot` (the physics numbers the aim preview needs) |
 | `frame` | During a shot: `b: [[id, x, y, angle], …]` and `h` (hardest hit, for the click sound) |
 | `respawn` | `ids` of pens that came back this turn, for the flash and sound |
 | `aim` | A computer is about to flick: same fields as `shoot` plus `seat`; the page draws it like a finger |
@@ -152,6 +154,15 @@ Anything not allowed (wrong person, wrong phase, not your turn) is silently igno
 | `closed` | The room was closed by an admin |
 
 A pen's `id` on the desk is its owner's **seat index**, so `players[id]` is the owner.
+
+### The live counter
+
+`GET /api/live` (public, totals only) returns `online` (people connected to any room, seated or watching),
+`playing` (people seated in a match in progress), `guests` (guest accounts connected), `bots`, `rooms`,
+`matches` (rooms in play) and `gamesDay` (matches finished in the last 24 hours). It is built from the rooms'
+`RoomInfo` copies, so it costs no database query except `gamesDay`, which is cached for 30 seconds. The page
+polls it every 8 seconds while the tab is visible and shows it in each room's side panel ("এখন লাইভ", plus this
+room's own players, computers and watchers) and on the home page.
 
 ---
 
@@ -209,20 +220,37 @@ A pen's `id` on the desk is its owner's **seat index**, so `players[id]` is the 
 
 - It only ever produces a flick, which the room applies through the same `Room::shoot` as a person's. It has no
   other way to touch the game.
-- **How it chooses.** For every other pen it tries aiming at the middle and towards both ends, at five powers,
-  with and without spin, plus a few gentle slides towards the centre: about 30 to 100 flicks. Each one is played
-  out on a copy of the desk with the real physics. Score: knocking a pen off is good (much better if it is that
-  player's last life), losing its own pen is very bad (and never acceptable on its last life), and where things
-  come to rest counts too (its own pen away from the edges, others near them).
-- **Levels.** Easy picks among its 6 best shots and its aim wanders ±0.13 rad and power ±20%. Medium: best 3,
-  ±0.06 rad, ±10%. Hard: always the best, ±0.02 rad, ±4%. Without this shake it would be near perfect, because it
-  sees the same physics the server runs.
+- **How it chooses.** It builds 40 to 110 candidate flicks:
+  - **attacks:** at every other pen's middle and towards both ends, at five powers, straight or with spin
+  - **moving in:** sized to stop just inside another pen, on the side away from that pen's nearest edge, ready to
+    push it outwards next turn (from far away even a full flick cannot push anyone off)
+  - **quiet moves:** a short slide towards the middle
+
+  Each one is played out on a copy of the desk with the real physics, then scored:
+  - knocking a pen off is good, and much better on that player's last life
+  - losing its own pen is very bad, and never acceptable on its last life
+  - other pens ending further from the middle is good, across the whole desk, not only near the edge (no single
+    flick from the middle reaches an edge, so games are won by pushing someone outwards over several turns)
+  - ending within striking reach of another pen, lined up to push it outwards, is good
+  - its own pen ending far from the middle is bad, weighted by the level's care (see below)
+- **Levels.**
+
+  | | Easy | Medium | Hard |
+  |---|---|---|---|
+  | Picks among its best | 6 | 3 | 1 |
+  | Aim wobble | ±0.13 rad | ±0.06 rad | ±0.02 rad |
+  | Power wobble | ±20% | ±10% | ±4% |
+  | Care for its own position | 0.1 | 0.45 | 1.0 |
+
+  Without the wobble it would be near perfect, because it sees the same physics the server runs. The care weight
+  exists because a pushed pen can always slide back to the middle on its owner's turn: a computer that always did
+  that could never be knocked off on Easy, so the easy one is careless about where it ends up.
 - **Timing.** It "thinks" for 0.7–1.4 s, broadcasts its `aim` (drawn like a person's pull-back), and flicks
   0.9 s later. Its turn has no clock on screen.
 - **Identity.** Names `রোবো রাজু`, `রোবো মিতু`, `রোবো টুনি`, always the Econo pen. Negative `user_id`s; saved
   in `game_players` (so admin sees who won), filtered out of the leaderboard.
-- Cost: the whole choice takes a few milliseconds; a test plays four computers through complete Easy and Hard
-  games in under 0.1 s.
+- Cost: the whole choice takes a few milliseconds, inside the room's own task; a test plays four computers
+  through full games on all three levels in under 0.1 s.
 
 ---
 
@@ -236,11 +264,17 @@ that is allowed to fail if the column exists). The same SQL runs on SQLite and P
 | `users` | id, email (unique), name, pass_hash, role (`player`/`admin`), blocked, created_at, coins, pen (selected), pens (owned, comma list), guest, contact | Guests have a placeholder email `guest-…@guest.invalid` and their real email in `contact` |
 | `sessions` | token_hash (SHA-256 of the token), user_id, created_at | The token itself is never stored. 30-day life |
 | `avatars` | user_id, mime, data (blob), updated_at | One picture per user, ≤ 300 KB, JPEG/PNG/WebP checked by magic bytes |
-| `games` | id, code, finished_at, winner_id, loser_id | One row per finished match |
-| `game_players` | game_id, user_id, name, coins, rank, looser | Stats, leaderboard and the daily reward cap are computed from these |
+| `games` | id, code, finished_at, winner_id, loser_id, room_id, difficulty, started_at, turns, skips, host_id, end_reason (`knockout` / `turns` / `walkaway`), players, bots, guests | One row per finished match. Rows from before the statistics release have the defaults (0 / '') in the newer columns |
+| `game_players` | game_id, user_id, name, coins, rank, looser, seat, pen, knocks, falls, lives, bot, guest | Stats, leaderboard and the daily reward cap are computed from these. Computers have negative user ids |
+| `rooms_log` | id, code, host_id, host_name, created_at, closed_at, close_reason (`idle` / `admin` / `restart` / `gone`), games, peak_people, used_bots | One row per room ever opened. Written when the room opens and when it closes; on start-up every row still open is closed as `restart` |
 
 Times are Unix seconds. Queries are written with `?`; `db::q` rewrites them to `$1, $2…` on Postgres once and
 caches the result.
+
+**Gotcha: NULL.** sqlx's `Any` driver cannot decode a SQL `NULL` into a Rust `Option` (it fails with "mismatched
+types … SQL type NULL"). Any nullable column read into Rust must be wrapped in `COALESCE(column, 0)` or
+`COALESCE(column, '')` in the query, and turned back into `None` in Rust if needed (see `admin_room_history`).
+Admin queries log their errors (`eprintln!`) instead of failing silently, so this shows up in the server log.
 
 ---
 
@@ -249,10 +283,13 @@ caches the result.
 **Accounts**
 
 - Sign-up: email, name (2–24 characters), password (6–100, and not one of the 20 most common).
+- **Guest mode** (the "গেস্ট" tab on the home page): a name only. Creates a password-less guest account and signs
+  in at once. The same endpoint (`POST /api/auth/guest`) serves the invite-link form, which also asks for an
+  email; when an email is given it must pass the filter.
 - Passwords are hashed with Argon2. Sessions are 32 random bytes; the browser keeps the token in
   `localStorage` (`kolom_token`) and sends it as `Authorization: Bearer …`, or as `?token=` on the WebSocket.
-- **Guest join:** an invite link asks only for name and email. That creates a password-less guest account. The
-  profile page lets a guest "save" it with a real email and password, keeping coins and pens.
+- Guest accounts have a placeholder email and no password, so they live only in that browser's token. The
+  profile page lets a guest "save" the account with a real email and password, keeping coins and pens.
 - **Blocked** users fail every token check, so blocking also ends their live sessions.
 - The admin is whoever matches `ADMIN_EMAIL` at start-up, plus anyone an admin promotes.
 
@@ -283,7 +320,25 @@ themselves coins, or buy without paying (the purchase is one conditional `UPDATE
 
 ---
 
-## 11. Frontend notes
+## 11. Admin
+
+`/admin/` (admins only; all data from `/api/admin/*`, refreshed every 5 seconds):
+
+- **Overview:** live numbers (playing, online, guests online, open rooms); totals (accounts and guests, new in
+  24 hours, matches, rooms opened, average match length and flicks, matches with computers or guests, coins paid,
+  blocked); a 14-day chart of matches per day (in the admin's own time zone, sent as `?tz=`) with a table view;
+  breakdowns by level, by number of players and by how matches ended; pen usage and win rate (people only).
+- **Players:** search, block, promote, give or take coins, remove a picture, delete.
+- **Rooms:** every open room with each seat (person, guest or computer; online; lives; knocks), and the history
+  of every room ever opened: how long it lived, peak attendance, how many matches, why it closed. "দেখুন" jumps
+  to that room's matches.
+- **Matches:** the last 200, filterable by level, room, code or player name. Opening a row shows the full record:
+  start and end, duration, flicks, skipped turns, how it ended, and each player's place, pen, knocks, falls,
+  lives left and coins.
+
+---
+
+## 12. Frontend notes
 
 - All interface text is Bangla, `<html lang="bn">`.
 - `Game.js` keeps live data in refs (positions, aim) and draws with `requestAnimationFrame`; React state is only
@@ -298,27 +353,32 @@ themselves coins, or buy without paying (the purchase is one conditional `UPDATE
 
 ---
 
-## 12. Running and testing
+## 13. Running and testing
 
 ```bash
 cd web && npm install && npm run build && cd ..
 cd server
 ADMIN_EMAIL=you@example.com ADMIN_PASSWORD='a-long-password' cargo run --release   # http://localhost:8080
 cargo test                                                                          # 22 tests
+cargo test --release balance -- --ignored --nocapture                               # balance measurements
 ```
 
 For page work with hot reload: run the server with `DEV_CORS=1` and `cd web && npm run dev` (port 3000, talks to
 8080 through `NEXT_PUBLIC_API`).
 
 `cargo test` covers the physics (falls, spin, respawn, the Easy/Hard margin), the computer (takes an easy knock,
-never drops its own last life, four computers finish whole games), the turn order, the email filter, the rate
-limiter and the password rule. The API and multiplayer behaviour (lobby, host passing, walk-away rule, tab
+never drops its own last life, four computers play whole games cleanly on every level), the turn order, the email
+filter, the rate limiter and the password rule.
+
+The `balance` measurement plays 40 games per level between the computer and a stand-in for a decent person, and
+prints how long games last and how many are settled by knock-outs. Run it after changing speeds, lives, the desk
+margin or the computer's scoring. The API and multiplayer behaviour (lobby, host passing, walk-away rule, tab
 handling, computers, rewards) has been checked with scripts against a running server; those scripts are not
 in the repository yet.
 
 ---
 
-## 13. Common changes
+## 14. Common changes
 
 | To | Change | Watch out for |
 |---|---|---|
@@ -333,7 +393,7 @@ in the repository yet.
 
 ---
 
-## 14. FAQ
+## 15. FAQ
 
 **Why Rust and not Node?** Small, fast, one binary that also serves the page. The physics runs on the server for
 every room, and a free instance handles many rooms on very little CPU and memory.
@@ -365,6 +425,9 @@ too abrupt. Lives and respawn make a match last several rounds. Hard keeps the o
 **Why "looser"?** That is how players say it. It stays in field names (`looser`) so the code and the game use one
 word.
 
+**Why do Easy games often run to the turn limit?** See Known limits: on a square desk a careful player can always
+slide back to the middle, and an Easy flick cannot push anyone off from there.
+
 **Where is the turn order decided?** `room::ring`. It goes round the desk, not by who joined first.
 
 **What if someone opens the game in two tabs?** The newer connection takes the seat. Closing either tab does not
@@ -372,7 +435,7 @@ unseat the player while the other is still open.
 
 ---
 
-## 15. Known limits
+## 16. Known limits
 
 - Single instance only (see FAQ). Rooms are lost on restart or deploy.
 - Free-tier sleep: the first visit after about 15 quiet minutes waits about a minute.
@@ -384,3 +447,13 @@ unseat the player while the other is still open.
 - The daily reward cap counts every paid win, including wins against the computer.
 - No email verification: the filter stops typos and fake domains, not someone typing a real address that is not
   theirs.
+- **Easy and Medium games often reach the turn limit.** Measured with the `balance` tool (a decent player against
+  the computer, 40 games each): Easy settles about 5 in 40 by knock-outs, Medium about 13 in 40, Hard about 34 in
+  40; the rest end on the turn limit (most lives, then nearest the middle wins). The cause is the square desk: a
+  pushed pen can always slide back to the middle on its owner's turn, and on Easy (60% speed, reach about 320 px)
+  no push from the middle reaches an edge 400 px away. Raising Easy's speed does not fix it until about 90%, which
+  undoes Easy. The fix is a rule (for example an edge that closes in after many turns without a fall, or a long
+  narrow bench like a real one), not a number.
+- Rooms closed by a restart keep 0 as their peak attendance: it lives in memory until the room closes.
+- Guest accounts created from the home page have no email at all; if the browser's storage is cleared, the
+  account cannot be recovered.
