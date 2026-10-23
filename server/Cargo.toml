@@ -17,6 +17,7 @@ futures-util = "0.3"
 
 [profile.release]
 opt-level = 3
-lto = true
-codegen-units = 1
+# Kept light on purpose: a small free build machine can run out of memory with full LTO.
+lto = false
+codegen-units = 16
 strip = true
