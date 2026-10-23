@@ -101,3 +101,6 @@ export function drawPen(ctx, style, hl, r) {
   ctx.fillStyle = look.clip
   ctx.beginPath(); ctx.arc(cx0 + rc * 0.17, -rc * 0.61, rc * 0.2, 0, 7); ctx.fill()
 }
+
+// Names shown in the lobby and game.
+export const PEN_NAMES = { econo: 'ইকোনো', matador: 'ম্যাটাডোর', gel: 'জেল গ্রিপ', marker: 'মার্কার', steel: 'স্টিল' }

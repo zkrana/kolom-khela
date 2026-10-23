@@ -9,7 +9,7 @@ use axum::extract::Request;
 use axum::http::{header, HeaderValue};
 use axum::middleware::{from_fn, Next};
 use axum::response::Response;
-use sqlx::SqlitePool;
+use sqlx::AnyPool;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -28,26 +28,26 @@ async fn cache_headers(req: Request, next: Next) -> Response {
 }
 
 pub struct AppState {
-    pub pool: SqlitePool,
+    pub pool: AnyPool,
     pub rooms: tokio::sync::Mutex<HashMap<String, room::RoomHandle>>,
     pub login_fails: std::sync::Mutex<HashMap<String, (u32, Instant)>>,
     pub guest_log: std::sync::Mutex<HashMap<String, Vec<Instant>>>,
 }
 
-async fn seed_admin(pool: &SqlitePool) {
+async fn seed_admin(pool: &AnyPool) {
     let (Ok(email), Ok(pass)) = (std::env::var("ADMIN_EMAIL"), std::env::var("ADMIN_PASSWORD")) else {
         println!("ADMIN_EMAIL / ADMIN_PASSWORD not set: no admin account was created.");
         return;
     };
     let email = email.trim().to_lowercase();
-    let exists: Option<i64> = sqlx::query_scalar("SELECT id FROM users WHERE email = ?").bind(&email).fetch_optional(pool).await.ok().flatten();
+    let exists: Option<i64> = sqlx::query_scalar(db::q("SELECT id FROM users WHERE email = ?")).bind(&email).fetch_optional(pool).await.ok().flatten();
     match exists {
         Some(id) => {
-            let _ = sqlx::query("UPDATE users SET role = 'admin', blocked = 0 WHERE id = ?").bind(id).execute(pool).await;
+            let _ = sqlx::query(db::q("UPDATE users SET role = 'admin', blocked = 0 WHERE id = ?")).bind(id).execute(pool).await;
         }
         None => {
             let hash = tokio::task::spawn_blocking(move || auth::hash_password(&pass)).await.unwrap_or_default();
-            let _ = sqlx::query("INSERT INTO users (email, name, pass_hash, role, created_at) VALUES (?, 'Admin', ?, 'admin', ?)")
+            let _ = sqlx::query(db::q("INSERT INTO users (email, name, pass_hash, role, contact, created_at) VALUES (?, 'Admin', ?, 'admin', '', ?)"))
                 .bind(&email)
                 .bind(hash)
                 .bind(db::now())

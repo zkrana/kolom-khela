@@ -31,19 +31,19 @@ export function Logo({ size = 26 }) {
 export function Nav({ me, active, onLogout }) {
   const link = (href, label, key) => <a key={key} href={href} className={active === key ? 'on' : ''}>{label}</a>
   return (
-    <nav className="nav" aria-label="Main">
-      <a className="brand" href="/"><Logo /> Kolom Khela</a>
+    <nav className="nav" aria-label="মেনু">
+      <a className="brand" href="/"><Logo /> কলম খেলা</a>
       <div className="navlinks">
-        {link('/', 'Play', 'play')}
-        {link('/shop/', 'Pen shop', 'shop')}
-        {link('/profile/', 'Profile', 'profile')}
-        {me?.user?.role === 'admin' && link('/admin/', 'Admin', 'admin')}
+        {link('/', 'খেলুন', 'play')}
+        {link('/shop/', 'কলমের দোকান', 'shop')}
+        {link('/profile/', 'প্রোফাইল', 'profile')}
+        {me?.user?.role === 'admin' && link('/admin/', 'অ্যাডমিন', 'admin')}
       </div>
       {me && (
         <>
-          <a className="coinchip" href="/shop/" title="Your coins"><span className="coin" />{me.user.coins}</a>
+          <a className="coinchip" href="/shop/" title="আপনার কয়েন"><span className="coin" />{me.user.coins}</a>
           <a href="/profile/" style={{ textDecoration: 'none' }} title={me.user.name}><Avatar id={me.user.id} name={me.user.name} at={me.user.avatarAt} size={36} /></a>
-          <button className="ghost small" onClick={async () => { try { await api('/api/auth/logout', { method: 'POST' }) } catch {} setToken(''); onLogout ? onLogout() : (window.location.href = '/') }}>Log out</button>
+          <button className="ghost small" onClick={async () => { try { await api('/api/auth/logout', { method: 'POST' }) } catch {} setToken(''); onLogout ? onLogout() : (window.location.href = '/') }}>লগআউট</button>
         </>
       )}
     </nav>

@@ -1,7 +1,7 @@
 'use client'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, getToken, setToken, wsUrl } from '../../lib/api'
-import { drawPen } from '../../lib/pens'
+import { drawPen, PEN_NAMES } from '../../lib/pens'
 import { Avatar } from '../../lib/ui'
 import { isMuted, setMuted, sfx } from '../../lib/sound'
 
@@ -10,10 +10,10 @@ const SIZE = 800
 
 // Desk looks. Each is painted once into an offscreen canvas and then just copied every frame.
 export const DESKS = {
-  bench: { label: 'School bench', swatch: 'linear-gradient(135deg,#e0a867,#b4773c)' },
-  felt: { label: 'Green felt', swatch: 'linear-gradient(135deg,#2aa371,#146b47)' },
-  ocean: { label: 'Ocean', swatch: 'linear-gradient(135deg,#3b9be0,#1c4f93)' },
-  classic: { label: 'Classic', swatch: 'linear-gradient(135deg,#efebe0,#d8d2c2)' },
+  bench: { label: 'স্কুলের বেঞ্চ', swatch: 'linear-gradient(135deg,#e0a867,#b4773c)' },
+  felt: { label: 'সবুজ কাপড়', swatch: 'linear-gradient(135deg,#2aa371,#146b47)' },
+  ocean: { label: 'সাগর', swatch: 'linear-gradient(135deg,#3b9be0,#1c4f93)' },
+  classic: { label: 'সাদামাটা', swatch: 'linear-gradient(135deg,#efebe0,#d8d2c2)' },
 }
 const deskCache = new Map()
 
@@ -148,20 +148,20 @@ function GuestJoin({ code, info, onDone }) {
   }
   const later = () => { try { sessionStorage.setItem('kolom_next', `/room/?code=${code}`) } catch {}; window.location.href = '/' }
   return (
-    <div className="wrap" style={{ maxWidth: 460, paddingTop: '8vh' }}>
+    <div className="wrap" style={{ maxWidth: 460, minHeight: '100vh', display: 'grid', alignContent: 'center' }}>
       <div className="card hero">
-        <h1 style={{ fontSize: 28 }}>{info && info.host ? `${info.host} invited you` : 'You are invited'}</h1>
-        <p className="muted">Join the Kolom Khela game in room <b style={{ color: 'var(--gold)', letterSpacing: 2 }}>{code}</b>. Just a name and your email, no password needed.</p>
-        {info === false && <p className="err">This room may have closed, but you can still try.</p>}
+        <h1 style={{ fontSize: 28 }}>{info && info.host ? `${info.host} আপনাকে ডেকেছেন` : 'আপনাকে খেলতে ডাকা হয়েছে'}</h1>
+        <p className="muted"><b style={{ color: 'var(--gold)', letterSpacing: 2 }}>{code}</b> রুমের কলম খেলায় ঢুকুন। শুধু নাম আর ইমেইল দিলেই হবে, পাসওয়ার্ড লাগবে না।</p>
+        {info === false && <p className="err">রুমটা হয়তো বন্ধ হয়ে গেছে, তবু চেষ্টা করে দেখতে পারেন।</p>}
         <form onSubmit={submit}>
-          <label htmlFor="gname">Your name</label>
+          <label htmlFor="gname">আপনার নাম</label>
           <input id="gname" required minLength={2} maxLength={24} autoComplete="nickname" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
-          <label htmlFor="gemail">Email</label>
+          <label htmlFor="gemail">ইমেইল</label>
           <input id="gemail" type="email" required autoComplete="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} />
           {error && <p className="err" role="alert">{error}</p>}
-          <div style={{ marginTop: 16 }}><button disabled={busy} style={{ width: '100%', fontSize: 18, padding: 13 }}>{busy ? 'Joining...' : 'Join the game'}</button></div>
+          <div style={{ marginTop: 16 }}><button disabled={busy} style={{ width: '100%', fontSize: 18, padding: 13 }}>{busy ? 'ঢুকছি...' : 'খেলায় ঢুকুন'}</button></div>
         </form>
-        <p className="muted" style={{ marginTop: 14 }}>Already have an account? <a href="/" onClick={(e) => { e.preventDefault(); later() }}>Log in</a></p>
+        <p className="muted" style={{ marginTop: 14 }}>অ্যাকাউন্ট আছে? <a href="/" onClick={(e) => { e.preventDefault(); later() }}>লগইন করুন</a></p>
       </div>
     </div>
   )
@@ -169,7 +169,7 @@ function GuestJoin({ code, info, onDone }) {
 
 function ShareBar({ url, host }) {
   const [copied, setCopied] = useState(false)
-  const text = `${host ? `${host} invited you` : 'Come play'} to Kolom Khela, the pen flicking game from school days!`
+  const text = `${host ? `${host} আপনাকে` : 'আসুন,'} কলম খেলায় ডেকেছেন। ক্লাসের বেঞ্চের সেই টোকা দেওয়ার খেলা, এবার অনলাইনে!`
   const enc = encodeURIComponent
   const open = (href) => window.open(href, '_blank', 'noopener,noreferrer,width=640,height=560')
   const copy = async () => {
@@ -183,14 +183,14 @@ function ShareBar({ url, host }) {
   return (
     <div>
       <div className="row" style={{ flexWrap: 'nowrap', gap: 6 }}>
-        <input id="invite-url" readOnly value={url} onFocus={(e) => e.target.select()} aria-label="Invite link" style={{ fontSize: 13, padding: '9px 10px' }} />
-        <button type="button" className="small" onClick={copy} style={{ whiteSpace: 'nowrap', padding: '9px 12px' }}>{copied ? 'Copied' : 'Copy link'}</button>
+        <input id="invite-url" readOnly value={url} onFocus={(e) => e.target.select()} aria-label="ইনভাইট লিংক" style={{ fontSize: 13, padding: '9px 10px' }} />
+        <button type="button" className="small" onClick={copy} style={{ whiteSpace: 'nowrap', padding: '9px 12px' }}>{copied ? 'কপি হয়েছে' : 'লিংক কপি'}</button>
       </div>
       <div className="row" style={{ gap: 6, marginTop: 8 }}>
         <button type="button" style={b('#1faa59')} onClick={() => open(`https://wa.me/?text=${enc(`${text} ${url}`)}`)}>WhatsApp</button>
         <button type="button" style={b('#1877f2')} onClick={() => open(`https://www.facebook.com/sharer/sharer.php?u=${enc(url)}&quote=${enc(text)}`)}>Facebook</button>
         <button type="button" style={b('#0a66c2')} onClick={() => open(`https://www.linkedin.com/sharing/share-offsite/?url=${enc(url)}`)}>LinkedIn</button>
-        {native && <button type="button" className="ghost" style={{ flex: '1 1 46%', padding: '9px 8px', fontSize: 14 }} onClick={() => navigator.share({ title: 'Kolom Khela', text, url }).catch(() => {})}>More...</button>}
+        {native && <button type="button" className="ghost" style={{ flex: '1 1 46%', padding: '9px 8px', fontSize: 14 }} onClick={() => navigator.share({ title: 'কলম খেলা', text, url }).catch(() => {})}>আরও...</button>}
       </div>
     </div>
   )
@@ -389,10 +389,10 @@ export default function Game({ code }) {
   }
 
   const invite = typeof window !== 'undefined' ? `${window.location.origin}/room/?code=${code}` : ''
-  if (auth === 'checking') return <div className="wrap muted">Loading...</div>
+  if (auth === 'checking') return <div className="wrap muted">লোড হচ্ছে...</div>
   if (auth === 'need') return <GuestJoin code={code} info={invite0} onDone={() => setAuth('checking')} />
 
-  if (conn === 'gone') return <div className="wrap"><div className="card"><h2>This room has closed</h2><p className="muted">Start a new game from the lobby.</p><a className="btn" href="/">Back to lobby</a></div></div>
+  if (conn === 'gone') return <div className="wrap"><div className="card"><h2>এই রুম বন্ধ হয়ে গেছে</h2><p className="muted">লবি থেকে নতুন খেলা শুরু করুন।</p><a className="btn" href="/">লবিতে ফিরুন</a></div></div>
 
   const left = state && state.left_ms ? Math.max(0, Math.ceil((state.left_ms - (performance.now() - recvAt.current)) / 1000)) : null
   const isHost = !!state && !!me && state.host === me.id
@@ -401,66 +401,66 @@ export default function Game({ code }) {
   return (
     <div className="wrap">
       <div className="row" style={{ justifyContent: 'space-between', marginBottom: 10 }}>
-        <a href="/" className="btn ghost small">&larr; Lobby</a>
-        <span className="muted">Room <b style={{ color: 'var(--gold)', letterSpacing: 2 }}>{code}</b> {conn !== 'live' && <span className="pill">reconnecting...</span>}</span>
+        <a href="/" className="btn ghost small">&larr; লবি</a>
+        <span className="muted">রুম <b style={{ color: 'var(--gold)', letterSpacing: 2 }}>{code}</b> {conn !== 'live' && <span className="pill">আবার সংযোগ হচ্ছে...</span>}</span>
       </div>
       <div className="game">
         <div>
-          <canvas ref={canvas} className="board" onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={() => { aim.current = null }} aria-label="Game board" />
+          <canvas ref={canvas} className="board" onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={() => { aim.current = null }} aria-label="খেলার বেঞ্চ" />
           <p className="muted" style={{ textAlign: 'center', margin: '8px 0 0' }}>
-            {!state ? 'Connecting...' : state.phase === 'lobby' ? 'Waiting for players. Share the invite link.' : state.phase === 'over' ? 'Game over' : state.simulating ? 'Kolom flying...' : myTurn ? `Your turn: press anywhere on the desk, pull back and let go${left !== null ? ` (${left}s)` : ''}` : `${turnName}'s turn${left !== null ? ` (${left}s)` : ''}`}
+            {!state ? 'সংযোগ হচ্ছে...' : state.phase === 'lobby' ? 'খেলোয়াড়দের জন্য অপেক্ষা। ইনভাইট লিংক পাঠান।' : state.phase === 'over' ? 'খেলা শেষ' : state.simulating ? 'কলম ছুটছে...' : myTurn ? `আপনার পালা: বেঞ্চের যেকোনো জায়গায় চেপে পেছনে টেনে ছেড়ে দিন${left !== null ? ` (${left} সে.)` : ''}` : `${turnName}-এর পালা${left !== null ? ` (${left} সে.)` : ''}`}
           </p>
         </div>
         <div className="card">
-          <h3>Players</h3>
+          <h3>খেলোয়াড়</h3>
           {(state?.players || []).map((p) => (
             <div key={p.id} className={`player ${state.phase === 'playing' && state.turn === p.seat && p.alive ? 'turn' : ''} ${!p.alive ? 'out' : ''}`}>
               <Avatar id={p.id} name={p.name} at={p.avatar} size={32} ring={COLORS[p.seat]} />
-              <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.name}{me && p.id === me.id ? ' (you)' : ''}{state.host === p.id ? ' *' : ''}</span>
-              {!p.online && <span className="pill">away</span>}
-              {!p.alive && <span className="pill">fell</span>}
-              <span className="muted" style={{ fontSize: 12 }}>{p.pen}</span>
+              <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.name}{me && p.id === me.id ? ' (আপনি)' : ''}{state.host === p.id ? ' *' : ''}</span>
+              {!p.online && <span className="pill">নেই</span>}
+              {!p.alive && <span className="pill">পড়েছে</span>}
+              <span className="muted" style={{ fontSize: 12 }}>{PEN_NAMES[p.pen] || p.pen}</span>
             </div>
           ))}
           {state?.phase === 'lobby' && (
             <div style={{ marginTop: 12 }}>
-              <h3 style={{ margin: '0 0 8px' }}>Invite friends</h3>
+              <h3 style={{ margin: '0 0 8px' }}>বন্ধুদের ডাকুন</h3>
               <ShareBar url={invite} host={me?.name} />
               <div style={{ height: 10 }} />
-              {isHost ? <button onClick={() => send({ t: 'start' })} disabled={state.players.length < 2} style={{ width: '100%' }}>{state.players.length < 2 ? 'Need 2 players' : 'Start game'}</button> : <p className="muted">The host starts the game.</p>}
+              {isHost ? <button onClick={() => send({ t: 'start' })} disabled={state.players.length < 2} style={{ width: '100%' }}>{state.players.length < 2 ? 'দুজন লাগবে' : 'খেলা শুরু করুন'}</button> : <p className="muted">হোস্ট খেলা শুরু করবেন।</p>}
             </div>
           )}
-          <h3 style={{ marginTop: 16 }}>Desk</h3>
+          <h3 style={{ marginTop: 16 }}>বেঞ্চ</h3>
           <div className="row" style={{ gap: 8 }}>
             <div className="swatches">
               {Object.entries(DESKS).map(([k, d]) => <button key={k} type="button" className={`swatch ${desk === k ? 'on' : ''}`} style={{ background: d.swatch }} title={d.label} aria-label={d.label} onClick={() => pickDesk(k)} />)}
             </div>
-            <button type="button" className="ghost small" onClick={toggleMute} style={{ marginLeft: 'auto' }}>{mute ? 'Sound off' : 'Sound on'}</button>
+            <button type="button" className="ghost small" onClick={toggleMute} style={{ marginLeft: 'auto' }}>{mute ? 'শব্দ বন্ধ' : 'শব্দ চালু'}</button>
           </div>
-          <h3 style={{ marginTop: 16 }}>Activity</h3>
-          <div className="log">{logs.length ? logs.map((l, i) => <div key={i}>{l}</div>) : 'Nothing yet.'}</div>
+          <h3 style={{ marginTop: 16 }}>ঘটনা</h3>
+          <div className="log">{logs.length ? logs.map((l, i) => <div key={i}>{l}</div>) : 'এখনো কিছু হয়নি।'}</div>
         </div>
       </div>
 
       {state?.phase === 'over' && (
         <div className="overlay">
           <div className="card">
-            <h2>Game over</h2>
+            <h2>খেলা শেষ</h2>
             {state.results.map((r) => (
               <div key={r.id} className="player">
                 <b style={{ width: 22 }}>{r.rank}</b>
                 <Avatar id={r.id} name={r.name} size={32} />
-                <span style={{ flex: 1 }}>{r.name}{me && r.id === me.id ? ' (you)' : ''}</span>
-                {r.looser && <span className="pill" style={{ background: 'var(--red)', color: '#fff' }}>looser</span>}
-                {r.rank === 1 && <span className="pill" style={{ background: 'var(--gold)', color: '#2a1a05' }}>winner</span>}
-                {r.reward > 0 && <b style={{ color: 'var(--gold)' }}>+{r.reward} coins</b>}
+                <span style={{ flex: 1 }}>{r.name}{me && r.id === me.id ? ' (আপনি)' : ''}</span>
+                {r.looser && <span className="pill" style={{ background: 'var(--red)', color: '#fff' }}>লুজার</span>}
+                {r.rank === 1 && <span className="pill" style={{ background: 'var(--gold)', color: '#2a1a05' }}>বিজয়ী</span>}
+                {r.reward > 0 && <b style={{ color: 'var(--gold)' }}>+{r.reward} কয়েন</b>}
               </div>
             ))}
             <div className="row" style={{ marginTop: 14 }}>
-              {isHost && <button onClick={() => send({ t: 'rematch' })}>Play again</button>}
-              <a className="btn ghost" style={{ background: 'transparent', color: 'var(--text)', border: '1px solid var(--line)' }} href="/">Lobby</a>
+              {isHost && <button onClick={() => send({ t: 'rematch' })}>আবার খেলুন</button>}
+              <a className="btn ghost" style={{ background: 'transparent', color: 'var(--text)', border: '1px solid var(--line)' }} href="/">লবি</a>
             </div>
-            {!isHost && <p className="muted">The host can start a rematch.</p>}
+            {!isHost && <p className="muted">হোস্ট আবার খেলা শুরু করতে পারেন।</p>}
           </div>
         </div>
       )}

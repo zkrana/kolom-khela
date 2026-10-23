@@ -30,7 +30,8 @@ Tests for the physics: `cd server && cargo test`.
 | Name | Default | Meaning |
 |---|---|---|
 | `PORT` | 8080 | Port to listen on (most hosts set this) |
-| `DB_PATH` | kolom.db | SQLite file |
+| `DATABASE_URL` | none | `postgres://...` (for example a free Neon database). Keeps players and coins when a free host restarts. Without it a local SQLite file is used |
+| `DB_PATH` | kolom.db | SQLite file, only used when `DATABASE_URL` is not set |
 | `STATIC_DIR` | ../web/out | The built page |
 | `ADMIN_EMAIL`, `ADMIN_PASSWORD` | none | Creates (or promotes) the admin account at start-up |
 | `DEV_CORS` | off | Set to anything for local `npm run dev` |
@@ -43,7 +44,7 @@ Build with the included `Dockerfile` (one container, about 10 MB of Rust binary 
 - **Koyeb** free instance: same Docker flow.
 - Rooms live in memory, so a restart ends games in progress.
 
-**Accounts and scores:** SQLite is a file. Free plans without a disk lose it on every redeploy or restart, which wipes accounts. For lasting accounts, either attach a small persistent disk (Fly.io volume, Render paid disk), or move the three tables to a free hosted database such as Turso or Neon. The admin account is re-created from the environment variables each start, so you can always log in.
+**Accounts and scores:** on a free host with no disk, a SQLite file is lost on every restart. Set `DATABASE_URL` to a free Neon Postgres database (use the direct, not the pooled, connection string) and everything is kept. The tables are created on first start. The admin account is created from `ADMIN_EMAIL` and `ADMIN_PASSWORD` if it does not exist yet.
 
 ## Rules recap
 

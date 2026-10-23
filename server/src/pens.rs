@@ -10,11 +10,11 @@ pub struct Pen {
 }
 
 pub const PENS: &[Pen] = &[
-    Pen { id: "econo", name: "Econo ballpoint", desc: "The classic. Everyone starts with one.", price: 0, hl: 70.0, r: 8.0, m: 2.0 },
-    Pen { id: "matador", name: "Matador", desc: "A touch heavier, a touch longer.", price: 30, hl: 72.0, r: 8.0, m: 2.4 },
-    Pen { id: "gel", name: "Gel grip pen", desc: "Chunky grip, solid hits.", price: 70, hl: 70.0, r: 9.0, m: 2.9 },
-    Pen { id: "marker", name: "Fat marker", desc: "Long and thick. Hard to push around.", price: 140, hl: 76.0, r: 11.0, m: 3.6 },
-    Pen { id: "steel", name: "Steel fountain pen", desc: "The heaviest pen in the class.", price: 250, hl: 80.0, r: 9.0, m: 4.4 },
+    Pen { id: "econo", name: "ইকোনো বলপেন", desc: "সবার পরিচিত সেই কলম। সবাই এটা দিয়েই শুরু করে।", price: 0, hl: 70.0, r: 8.0, m: 2.0 },
+    Pen { id: "matador", name: "ম্যাটাডোর", desc: "একটু ভারী, একটু লম্বা।", price: 30, hl: 72.0, r: 8.0, m: 2.4 },
+    Pen { id: "gel", name: "জেল গ্রিপ কলম", desc: "মোটা গ্রিপ, জোরালো মার।", price: 70, hl: 70.0, r: 9.0, m: 2.9 },
+    Pen { id: "marker", name: "মোটা মার্কার", desc: "লম্বা আর মোটা। ঠেলে সরানো কঠিন।", price: 140, hl: 76.0, r: 11.0, m: 3.6 },
+    Pen { id: "steel", name: "স্টিলের ফাউন্টেন পেন", desc: "ক্লাসের সবচেয়ে ভারী কলম।", price: 250, hl: 80.0, r: 9.0, m: 4.4 },
 ];
 
 pub const WIN_REWARD: i64 = 10;

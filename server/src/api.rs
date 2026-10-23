@@ -63,26 +63,26 @@ pub fn router(state: Arc<AppState>) -> Router {
 async fn need_user(st: &AppState, h: &HeaderMap) -> Result<User, ApiErr> {
     match auth::user_from_headers(st, h).await {
         Some(u) => Ok(u),
-        None => err(StatusCode::UNAUTHORIZED, "Please log in"),
+        None => err(StatusCode::UNAUTHORIZED, "আগে লগইন করুন"),
     }
 }
 async fn need_admin(st: &AppState, h: &HeaderMap) -> Result<User, ApiErr> {
     let u = need_user(st, h).await?;
     if u.role != "admin" {
-        return err(StatusCode::FORBIDDEN, "Admins only");
+        return err(StatusCode::FORBIDDEN, "শুধু অ্যাডমিনদের জন্য");
     }
     Ok(u)
 }
 
 async fn session_for(st: &AppState, user_id: i64) -> Result<String, ApiErr> {
     let token = auth::new_token();
-    sqlx::query("INSERT INTO sessions (token_hash, user_id, created_at) VALUES (?, ?, ?)")
+    sqlx::query(db::q("INSERT INTO sessions (token_hash, user_id, created_at) VALUES (?, ?, ?)"))
         .bind(auth::hash_token(&token))
         .bind(user_id)
         .bind(db::now())
         .execute(&st.pool)
         .await
-        .map_err(|_| ApiErr(StatusCode::INTERNAL_SERVER_ERROR, "Could not start a session".into()))?;
+        .map_err(|_| ApiErr(StatusCode::INTERNAL_SERVER_ERROR, "লগইন শুরু করা যায়নি".into()))?;
     Ok(token)
 }
 
@@ -97,26 +97,26 @@ async fn register(State(st): St, Json(b): Json<RegisterBody>) -> Res<Value> {
     let email = b.email.trim().to_lowercase();
     let name = b.name.trim().to_string();
     if !valid_email(&email) {
-        return err(StatusCode::BAD_REQUEST, "Enter a valid email");
+        return err(StatusCode::BAD_REQUEST, "সঠিক ইমেইল দিন");
     }
     if name.chars().count() < 2 || name.chars().count() > 24 {
-        return err(StatusCode::BAD_REQUEST, "Name must be 2 to 24 characters");
+        return err(StatusCode::BAD_REQUEST, "নাম ২ থেকে ২৪ অক্ষরের হতে হবে");
     }
     if b.password.len() < 6 || b.password.len() > 100 {
-        return err(StatusCode::BAD_REQUEST, "Password must be at least 6 characters");
+        return err(StatusCode::BAD_REQUEST, "পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে");
     }
     let pw = b.password.clone();
     let hash = tokio::task::spawn_blocking(move || auth::hash_password(&pw)).await.unwrap_or_default();
-    let res = sqlx::query("INSERT INTO users (email, name, pass_hash, created_at) VALUES (?, ?, ?, ?)")
+    let res = sqlx::query_scalar::<_, i64>(db::q("INSERT INTO users (email, name, pass_hash, contact, created_at) VALUES (?, ?, ?, '', ?) RETURNING id"))
         .bind(&email)
         .bind(&name)
         .bind(&hash)
         .bind(db::now())
-        .execute(&st.pool)
+        .fetch_one(&st.pool)
         .await;
     let id = match res {
-        Ok(r) => r.last_insert_rowid(),
-        Err(_) => return err(StatusCode::CONFLICT, "That email is already registered"),
+        Ok(id) => id,
+        Err(_) => return err(StatusCode::CONFLICT, "এই ইমেইল দিয়ে আগেই অ্যাকাউন্ট খোলা আছে"),
     };
     let token = session_for(&st, id).await?;
     Ok(Json(json!({ "token": token, "user": { "id": id, "name": name, "email": email, "role": "player", "coins": 0, "pen": "econo" } })))
@@ -143,10 +143,10 @@ async fn guest_join(State(st): St, headers: HeaderMap, Json(b): Json<GuestBody>)
     let email = b.email.trim().to_lowercase();
     let name = b.name.trim().to_string();
     if !valid_email(&email) {
-        return err(StatusCode::BAD_REQUEST, "Enter a valid email");
+        return err(StatusCode::BAD_REQUEST, "সঠিক ইমেইল দিন");
     }
     if name.chars().count() < 2 || name.chars().count() > 24 {
-        return err(StatusCode::BAD_REQUEST, "Name must be 2 to 24 characters");
+        return err(StatusCode::BAD_REQUEST, "নাম ২ থেকে ২৪ অক্ষরের হতে হবে");
     }
     {
         // At most 15 new guests per address every 10 minutes.
@@ -154,23 +154,23 @@ async fn guest_join(State(st): St, headers: HeaderMap, Json(b): Json<GuestBody>)
         let hits = log.entry(client_ip(&headers)).or_default();
         hits.retain(|t| t.elapsed() < Duration::from_secs(600));
         if hits.len() >= 15 {
-            return err(StatusCode::TOO_MANY_REQUESTS, "Too many new players from here. Try again in a few minutes.");
+            return err(StatusCode::TOO_MANY_REQUESTS, "এখান থেকে অনেক বেশি নতুন খেলোয়াড় এসেছে। কয়েক মিনিট পর আবার চেষ্টা করুন।");
         }
         hits.push(Instant::now());
     }
-    let taken: Option<i64> = sqlx::query_scalar("SELECT id FROM users WHERE email = ? AND guest = 0").bind(&email).fetch_optional(&st.pool).await.ok().flatten();
+    let taken: Option<i64> = sqlx::query_scalar(db::q("SELECT id FROM users WHERE email = ? AND guest = 0")).bind(&email).fetch_optional(&st.pool).await.ok().flatten();
     if taken.is_some() {
-        return err(StatusCode::CONFLICT, "This email already has an account. Log in instead.");
+        return err(StatusCode::CONFLICT, "এই ইমেইলে আগেই অ্যাকাউন্ট আছে। লগইন করুন।");
     }
     let fake = format!("guest-{}@guest.invalid", &auth::new_token()[..12]);
-    let res = sqlx::query("INSERT INTO users (email, name, pass_hash, guest, contact, created_at) VALUES (?, ?, '', 1, ?, ?)")
+    let res = sqlx::query_scalar::<_, i64>(db::q("INSERT INTO users (email, name, pass_hash, guest, contact, created_at) VALUES (?, ?, '', 1, ?, ?) RETURNING id"))
         .bind(&fake)
         .bind(&name)
         .bind(&email)
         .bind(db::now())
-        .execute(&st.pool)
+        .fetch_one(&st.pool)
         .await;
-    let Ok(id) = res.map(|r| r.last_insert_rowid()) else { return err(StatusCode::INTERNAL_SERVER_ERROR, "Could not join. Try again.") };
+    let Ok(id) = res else { return err(StatusCode::INTERNAL_SERVER_ERROR, "খেলায় ঢোকা যায়নি। আবার চেষ্টা করুন।") };
     let token = session_for(&st, id).await?;
     Ok(Json(json!({ "token": token, "user": { "id": id, "name": name, "role": "player", "coins": 0, "pen": "econo", "guest": true } })))
 }
@@ -185,18 +185,18 @@ struct UpgradeBody {
 async fn upgrade_guest(State(st): St, headers: HeaderMap, Json(b): Json<UpgradeBody>) -> Res<Value> {
     let u = need_user(&st, &headers).await?;
     if u.guest != 1 {
-        return err(StatusCode::BAD_REQUEST, "This account is already saved");
+        return err(StatusCode::BAD_REQUEST, "এই অ্যাকাউন্ট আগেই সেভ করা আছে");
     }
     let email = b.email.trim().to_lowercase();
     if !valid_email(&email) {
-        return err(StatusCode::BAD_REQUEST, "Enter a valid email");
+        return err(StatusCode::BAD_REQUEST, "সঠিক ইমেইল দিন");
     }
     if b.password.len() < 6 || b.password.len() > 100 {
-        return err(StatusCode::BAD_REQUEST, "Password must be at least 6 characters");
+        return err(StatusCode::BAD_REQUEST, "পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে");
     }
     let pw = b.password.clone();
     let hash = tokio::task::spawn_blocking(move || auth::hash_password(&pw)).await.unwrap_or_default();
-    let done = sqlx::query("UPDATE users SET email = ?, pass_hash = ?, guest = 0, contact = NULL WHERE id = ? AND guest = 1")
+    let done = sqlx::query(db::q("UPDATE users SET email = ?, pass_hash = ?, guest = 0, contact = '' WHERE id = ? AND guest = 1"))
         .bind(&email)
         .bind(&hash)
         .bind(u.id)
@@ -204,7 +204,7 @@ async fn upgrade_guest(State(st): St, headers: HeaderMap, Json(b): Json<UpgradeB
         .await;
     match done {
         Ok(_) => Ok(Json(json!({ "ok": true }))),
-        Err(_) => err(StatusCode::CONFLICT, "That email is already registered. Log in with it instead."),
+        Err(_) => err(StatusCode::CONFLICT, "এই ইমেইল আগেই নেওয়া হয়ে গেছে। ওটা দিয়ে লগইন করুন।"),
     }
 }
 
@@ -221,11 +221,11 @@ async fn login(State(st): St, Json(b): Json<LoginBody>) -> Res<Value> {
         let fails = st.login_fails.lock().unwrap();
         if let Some((n, at)) = fails.get(&email) {
             if *n >= 8 && at.elapsed() < Duration::from_secs(300) {
-                return err(StatusCode::TOO_MANY_REQUESTS, "Too many tries. Wait a few minutes.");
+                return err(StatusCode::TOO_MANY_REQUESTS, "অনেকবার ভুল হয়েছে। কয়েক মিনিট অপেক্ষা করুন।");
             }
         }
     }
-    let user: Option<User> = sqlx::query_as(&format!("{} WHERE u.email = ?", auth::USER_SELECT)).bind(&email).fetch_optional(&st.pool).await.ok().flatten();
+    let user: Option<User> = sqlx::query_as(db::q(&format!("{} WHERE u.email = ?", auth::USER_SELECT))).bind(&email).fetch_optional(&st.pool).await.ok().flatten();
     let hash = user.as_ref().map(|u| u.pass_hash.clone()).unwrap_or_default();
     let pw = b.password.clone();
     let ok = tokio::task::spawn_blocking(move || auth::verify_password(&pw, &hash)).await.unwrap_or(false);
@@ -237,10 +237,10 @@ async fn login(State(st): St, Json(b): Json<LoginBody>) -> Res<Value> {
         }
         e.0 += 1;
         e.1 = Instant::now();
-        return err(StatusCode::UNAUTHORIZED, "Wrong email or password");
+        return err(StatusCode::UNAUTHORIZED, "ইমেইল বা পাসওয়ার্ড ভুল");
     };
     if user.blocked != 0 {
-        return err(StatusCode::FORBIDDEN, "This account is blocked");
+        return err(StatusCode::FORBIDDEN, "এই অ্যাকাউন্ট ব্লক করা আছে");
     }
     st.login_fails.lock().unwrap().remove(&email);
     let token = session_for(&st, user.id).await?;
@@ -249,7 +249,7 @@ async fn login(State(st): St, Json(b): Json<LoginBody>) -> Res<Value> {
 
 async fn logout(State(st): St, headers: HeaderMap) -> Res<Value> {
     if let Some(t) = headers.get("authorization").and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer ")) {
-        let _ = sqlx::query("DELETE FROM sessions WHERE token_hash = ?").bind(auth::hash_token(t)).execute(&st.pool).await;
+        let _ = sqlx::query(db::q("DELETE FROM sessions WHERE token_hash = ?")).bind(auth::hash_token(t)).execute(&st.pool).await;
     }
     Ok(Json(json!({ "ok": true })))
 }
@@ -257,7 +257,7 @@ async fn logout(State(st): St, headers: HeaderMap) -> Res<Value> {
 async fn me(State(st): St, headers: HeaderMap) -> Res<Value> {
     let u = need_user(&st, &headers).await?;
     let row: (i64, i64, i64, i64) = sqlx::query_as(
-        "SELECT COUNT(*), COALESCE(SUM(CASE WHEN rank = 1 THEN 1 ELSE 0 END), 0), COALESCE(SUM(looser), 0), COALESCE(SUM(coins), 0) FROM game_players WHERE user_id = ?",
+        db::q("SELECT COUNT(*), CAST(COALESCE(SUM(CASE WHEN rank = 1 THEN 1 ELSE 0 END), 0) AS BIGINT), CAST(COALESCE(SUM(looser), 0) AS BIGINT), CAST(COALESCE(SUM(coins), 0) AS BIGINT) FROM game_players WHERE user_id = ?"),
     )
     .bind(u.id)
     .fetch_one(&st.pool)
@@ -279,7 +279,7 @@ async fn create_room(State(st): St, headers: HeaderMap) -> Res<Value> {
     let u = need_user(&st, &headers).await?;
     let mut rooms = st.rooms.lock().await;
     if rooms.len() >= 200 {
-        return err(StatusCode::SERVICE_UNAVAILABLE, "The server is full right now. Try again soon.");
+        return err(StatusCode::SERVICE_UNAVAILABLE, "সার্ভারে এখন জায়গা নেই। একটু পরে চেষ্টা করুন।");
     }
     let mut code = new_code();
     while rooms.contains_key(&code) {
@@ -298,22 +298,22 @@ async fn room_exists(State(st): St, Path(code): Path<String>) -> Res<Value> {
             let i = h.info.lock().unwrap().clone();
             Ok(Json(json!({ "code": i.code, "host": i.host, "players": i.players, "phase": i.phase })))
         }
-        None => err(StatusCode::NOT_FOUND, "Room not found. It may have closed."),
+        None => err(StatusCode::NOT_FOUND, "রুম পাওয়া যায়নি। হয়তো বন্ধ হয়ে গেছে।"),
     }
 }
 
 async fn leaderboard(State(st): St) -> Res<Value> {
-    let rows: Vec<(i64, String, i64, i64, Option<i64>)> = sqlx::query_as(
-        "SELECT p.user_id, MAX(p.name), SUM(CASE WHEN p.rank = 1 THEN 1 ELSE 0 END) AS wins, COUNT(*) AS played,
-                (SELECT updated_at FROM avatars a WHERE a.user_id = p.user_id)
-         FROM game_players p GROUP BY p.user_id ORDER BY wins DESC, played ASC LIMIT 10",
+    let rows: Vec<(i64, String, i64, i64, i64)> = sqlx::query_as(
+        db::q("SELECT p.user_id, MAX(p.name), CAST(SUM(CASE WHEN p.rank = 1 THEN 1 ELSE 0 END) AS BIGINT) AS wins, COUNT(*) AS played,
+                COALESCE((SELECT updated_at FROM avatars a WHERE a.user_id = p.user_id), 0)
+         FROM game_players p GROUP BY p.user_id ORDER BY wins DESC, played ASC LIMIT 10"),
     )
     .fetch_all(&st.pool)
     .await
     .unwrap_or_default();
     Ok(Json(json!(rows
         .into_iter()
-        .map(|(id, n, w, p, av)| json!({ "id": id, "name": n, "wins": w, "played": p, "avatar": av }))
+        .map(|(id, n, w, p, av)| json!({ "id": id, "name": n, "wins": w, "played": p, "avatar": if av > 0 { Some(av) } else { None } }))
         .collect::<Vec<_>>())))
 }
 
@@ -329,9 +329,9 @@ async fn update_me(State(st): St, headers: HeaderMap, Json(p): Json<MePatch>) ->
     if let Some(n) = p.name {
         let n = n.trim().to_string();
         if n.chars().count() < 2 || n.chars().count() > 24 {
-            return err(StatusCode::BAD_REQUEST, "Name must be 2 to 24 characters");
+            return err(StatusCode::BAD_REQUEST, "নাম ২ থেকে ২৪ অক্ষরের হতে হবে");
         }
-        let _ = sqlx::query("UPDATE users SET name = ? WHERE id = ?").bind(&n).bind(u.id).execute(&st.pool).await;
+        let _ = sqlx::query(db::q("UPDATE users SET name = ? WHERE id = ?")).bind(&n).bind(u.id).execute(&st.pool).await;
     }
     Ok(Json(json!({ "ok": true })))
 }
@@ -345,15 +345,15 @@ struct PwBody {
 async fn change_password(State(st): St, headers: HeaderMap, Json(b): Json<PwBody>) -> Res<Value> {
     let u = need_user(&st, &headers).await?;
     if b.new.len() < 6 || b.new.len() > 100 {
-        return err(StatusCode::BAD_REQUEST, "New password must be at least 6 characters");
+        return err(StatusCode::BAD_REQUEST, "নতুন পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে");
     }
     let (cur, hash) = (b.current.clone(), u.pass_hash.clone());
     if !tokio::task::spawn_blocking(move || auth::verify_password(&cur, &hash)).await.unwrap_or(false) {
-        return err(StatusCode::UNAUTHORIZED, "Current password is wrong");
+        return err(StatusCode::UNAUTHORIZED, "বর্তমান পাসওয়ার্ড ভুল");
     }
     let new = b.new.clone();
     let hash = tokio::task::spawn_blocking(move || auth::hash_password(&new)).await.unwrap_or_default();
-    let _ = sqlx::query("UPDATE users SET pass_hash = ? WHERE id = ?").bind(hash).bind(u.id).execute(&st.pool).await;
+    let _ = sqlx::query(db::q("UPDATE users SET pass_hash = ? WHERE id = ?")).bind(hash).bind(u.id).execute(&st.pool).await;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -373,13 +373,13 @@ fn image_mime(b: &[u8]) -> Option<&'static str> {
 async fn set_avatar(State(st): St, headers: HeaderMap, body: Bytes) -> Res<Value> {
     let u = need_user(&st, &headers).await?;
     if body.len() > 300_000 {
-        return err(StatusCode::PAYLOAD_TOO_LARGE, "Picture is too big (300 KB max)");
+        return err(StatusCode::PAYLOAD_TOO_LARGE, "ছবি অনেক বড় (সর্বোচ্চ ৩০০ KB)");
     }
     let Some(mime) = image_mime(&body) else {
-        return err(StatusCode::BAD_REQUEST, "Use a JPG, PNG or WebP picture");
+        return err(StatusCode::BAD_REQUEST, "JPG, PNG বা WebP ছবি দিন");
     };
     let at = db::now();
-    let _ = sqlx::query("INSERT INTO avatars (user_id, mime, data, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET mime = excluded.mime, data = excluded.data, updated_at = excluded.updated_at")
+    let _ = sqlx::query(db::q("INSERT INTO avatars (user_id, mime, data, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET mime = excluded.mime, data = excluded.data, updated_at = excluded.updated_at"))
         .bind(u.id)
         .bind(mime)
         .bind(body.to_vec())
@@ -391,12 +391,12 @@ async fn set_avatar(State(st): St, headers: HeaderMap, body: Bytes) -> Res<Value
 
 async fn delete_my_avatar(State(st): St, headers: HeaderMap) -> Res<Value> {
     let u = need_user(&st, &headers).await?;
-    let _ = sqlx::query("DELETE FROM avatars WHERE user_id = ?").bind(u.id).execute(&st.pool).await;
+    let _ = sqlx::query(db::q("DELETE FROM avatars WHERE user_id = ?")).bind(u.id).execute(&st.pool).await;
     Ok(Json(json!({ "ok": true })))
 }
 
 async fn get_avatar(State(st): St, Path(id): Path<i64>) -> Response {
-    let row: Option<(String, Vec<u8>)> = sqlx::query_as("SELECT mime, data FROM avatars WHERE user_id = ?").bind(id).fetch_optional(&st.pool).await.ok().flatten();
+    let row: Option<(String, Vec<u8>)> = sqlx::query_as(db::q("SELECT mime, data FROM avatars WHERE user_id = ?")).bind(id).fetch_optional(&st.pool).await.ok().flatten();
     match row {
         Some((mime, data)) => (
             [
@@ -413,7 +413,7 @@ async fn get_avatar(State(st): St, Path(id): Path<i64>) -> Response {
 
 async fn admin_avatar_delete(State(st): St, headers: HeaderMap, Path(id): Path<i64>) -> Res<Value> {
     need_admin(&st, &headers).await?;
-    let _ = sqlx::query("DELETE FROM avatars WHERE user_id = ?").bind(id).execute(&st.pool).await;
+    let _ = sqlx::query(db::q("DELETE FROM avatars WHERE user_id = ?")).bind(id).execute(&st.pool).await;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -440,13 +440,13 @@ struct PenBody {
 
 async fn shop_buy(State(st): St, headers: HeaderMap, Json(b): Json<PenBody>) -> Res<Value> {
     let u = need_user(&st, &headers).await?;
-    let Some(p) = pens::find(&b.id) else { return err(StatusCode::NOT_FOUND, "No such pen") };
+    let Some(p) = pens::find(&b.id) else { return err(StatusCode::NOT_FOUND, "এই নামে কোনো কলম নেই") };
     if owned(&u).contains(&p.id) {
-        return err(StatusCode::CONFLICT, "You already own this pen");
+        return err(StatusCode::CONFLICT, "এই কলম আপনার আগেই আছে");
     }
     // One statement, so two quick taps cannot spend the same coins twice.
     let new_pens = if u.pens.is_empty() { p.id.to_string() } else { format!("{},{}", u.pens, p.id) };
-    let done = sqlx::query("UPDATE users SET coins = coins - ?1, pens = ?2 WHERE id = ?3 AND coins >= ?1 AND pens = ?4")
+    let done = sqlx::query(db::q("UPDATE users SET coins = coins - ?1, pens = ?2 WHERE id = ?3 AND coins >= ?1 AND pens = ?4"))
         .bind(p.price)
         .bind(&new_pens)
         .bind(u.id)
@@ -456,18 +456,18 @@ async fn shop_buy(State(st): St, headers: HeaderMap, Json(b): Json<PenBody>) -> 
         .map(|r| r.rows_affected())
         .unwrap_or(0);
     if done == 0 {
-        return err(StatusCode::PAYMENT_REQUIRED, "Not enough coins yet. Win games to earn more.");
+        return err(StatusCode::PAYMENT_REQUIRED, "কয়েন যথেষ্ট নেই। খেলা জিতে আরও কয়েন জমান।");
     }
     Ok(Json(json!({ "ok": true, "coins": u.coins - p.price })))
 }
 
 async fn shop_select(State(st): St, headers: HeaderMap, Json(b): Json<PenBody>) -> Res<Value> {
     let u = need_user(&st, &headers).await?;
-    let Some(p) = pens::find(&b.id) else { return err(StatusCode::NOT_FOUND, "No such pen") };
+    let Some(p) = pens::find(&b.id) else { return err(StatusCode::NOT_FOUND, "এই নামে কোনো কলম নেই") };
     if !owned(&u).contains(&p.id) {
-        return err(StatusCode::FORBIDDEN, "Buy this pen first");
+        return err(StatusCode::FORBIDDEN, "আগে এই কলমটা কিনুন");
     }
-    let _ = sqlx::query("UPDATE users SET pen = ? WHERE id = ?").bind(p.id).bind(u.id).execute(&st.pool).await;
+    let _ = sqlx::query(db::q("UPDATE users SET pen = ? WHERE id = ?")).bind(p.id).bind(u.id).execute(&st.pool).await;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -490,7 +490,7 @@ async fn admin_stats(State(st): St, headers: HeaderMap) -> Res<Value> {
 
 async fn admin_users(State(st): St, headers: HeaderMap) -> Res<Value> {
     need_admin(&st, &headers).await?;
-    let rows: Vec<User> = sqlx::query_as(&format!("{} ORDER BY u.id DESC LIMIT 500", auth::USER_SELECT)).fetch_all(&st.pool).await.unwrap_or_default();
+    let rows: Vec<User> = sqlx::query_as(db::q(&format!("{} ORDER BY u.id DESC LIMIT 500", auth::USER_SELECT))).fetch_all(&st.pool).await.unwrap_or_default();
     Ok(Json(json!(rows)))
 }
 
@@ -504,21 +504,21 @@ struct UserPatch {
 async fn admin_user_update(State(st): St, headers: HeaderMap, Path(id): Path<i64>, Json(p): Json<UserPatch>) -> Res<Value> {
     let me = need_admin(&st, &headers).await?;
     if id == me.id {
-        return err(StatusCode::BAD_REQUEST, "You cannot change your own account here");
+        return err(StatusCode::BAD_REQUEST, "এখান থেকে নিজের অ্যাকাউন্ট বদলানো যায় না");
     }
     if let Some(b) = p.blocked {
-        let _ = sqlx::query("UPDATE users SET blocked = ? WHERE id = ?").bind(b as i64).bind(id).execute(&st.pool).await;
+        let _ = sqlx::query(db::q("UPDATE users SET blocked = ? WHERE id = ?")).bind(b as i64).bind(id).execute(&st.pool).await;
         if b {
-            let _ = sqlx::query("DELETE FROM sessions WHERE user_id = ?").bind(id).execute(&st.pool).await;
+            let _ = sqlx::query(db::q("DELETE FROM sessions WHERE user_id = ?")).bind(id).execute(&st.pool).await;
         }
     }
     if let Some(c) = p.add_coins {
         let c = c.clamp(-100_000, 100_000);
-        let _ = sqlx::query("UPDATE users SET coins = MAX(0, coins + ?) WHERE id = ?").bind(c).bind(id).execute(&st.pool).await;
+        let _ = sqlx::query(db::q("UPDATE users SET coins = CASE WHEN coins + ?1 < 0 THEN 0 ELSE coins + ?1 END WHERE id = ?2")).bind(c).bind(id).execute(&st.pool).await;
     }
     if let Some(r) = p.role {
         if r == "admin" || r == "player" {
-            let _ = sqlx::query("UPDATE users SET role = ? WHERE id = ?").bind(r).bind(id).execute(&st.pool).await;
+            let _ = sqlx::query(db::q("UPDATE users SET role = ? WHERE id = ?")).bind(r).bind(id).execute(&st.pool).await;
         }
     }
     Ok(Json(json!({ "ok": true })))
@@ -527,9 +527,9 @@ async fn admin_user_update(State(st): St, headers: HeaderMap, Path(id): Path<i64
 async fn admin_user_delete(State(st): St, headers: HeaderMap, Path(id): Path<i64>) -> Res<Value> {
     let me = need_admin(&st, &headers).await?;
     if id == me.id {
-        return err(StatusCode::BAD_REQUEST, "You cannot delete yourself");
+        return err(StatusCode::BAD_REQUEST, "নিজেকে ডিলিট করা যায় না");
     }
-    let _ = sqlx::query("DELETE FROM users WHERE id = ?").bind(id).execute(&st.pool).await;
+    let _ = sqlx::query(db::q("DELETE FROM users WHERE id = ?")).bind(id).execute(&st.pool).await;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -556,18 +556,18 @@ async fn admin_room_close(State(st): St, headers: HeaderMap, Path(code): Path<St
 
 async fn admin_games(State(st): St, headers: HeaderMap) -> Res<Value> {
     need_admin(&st, &headers).await?;
-    let rows: Vec<(i64, String, i64, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT g.id, g.code, g.finished_at,
-            (SELECT name FROM game_players p WHERE p.game_id = g.id AND p.rank = 1 LIMIT 1),
-            (SELECT name FROM game_players p WHERE p.game_id = g.id AND p.looser = 1 LIMIT 1)
-         FROM games g ORDER BY g.id DESC LIMIT 100",
+    let rows: Vec<(i64, String, i64, String, String)> = sqlx::query_as(
+        db::q("SELECT g.id, g.code, g.finished_at,
+            COALESCE((SELECT name FROM game_players p WHERE p.game_id = g.id AND p.rank = 1 LIMIT 1), ''),
+            COALESCE((SELECT name FROM game_players p WHERE p.game_id = g.id AND p.looser = 1 LIMIT 1), '')
+         FROM games g ORDER BY g.id DESC LIMIT 100"),
     )
     .fetch_all(&st.pool)
     .await
     .unwrap_or_default();
     Ok(Json(json!(rows
         .into_iter()
-        .map(|(id, code, at, w, l)| json!({ "id": id, "code": code, "finishedAt": at, "winner": w, "looser": l }))
+        .map(|(id, code, at, w, l)| json!({ "id": id, "code": code, "finishedAt": at, "winner": if w.is_empty() { None } else { Some(w) }, "looser": if l.is_empty() { None } else { Some(l) } }))
         .collect::<Vec<_>>())))
 }
 
@@ -598,7 +598,7 @@ struct ClientMsg {
 async fn play(socket: WebSocket, user: User, handle: room::RoomHandle) {
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = unbounded_channel::<String>();
-    if handle.tx.send(Cmd::Join { user_id: user.id, name: user.name.clone(), pen: user.pen.clone(), avatar: user.avatar_at, tx }).is_err() {
+    if handle.tx.send(Cmd::Join { user_id: user.id, name: user.name.clone(), pen: user.pen.clone(), avatar: if user.avatar_at > 0 { Some(user.avatar_at) } else { None }, tx }).is_err() {
         let _ = sink.send(Message::Text(json!({ "t": "closed" }).to_string())).await;
         return;
     }

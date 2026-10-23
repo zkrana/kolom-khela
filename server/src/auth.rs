@@ -1,3 +1,4 @@
+use crate::db;
 use crate::AppState;
 use argon2::password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
@@ -21,13 +22,13 @@ pub struct User {
     #[serde(skip)]
     pub pens: String,
     pub guest: i64,
-    pub contact: Option<String>,
-    #[sqlx(default)]
+    pub contact: String,
+    /// When the picture was last set; 0 when there is none.
     #[serde(rename = "avatarAt")]
-    pub avatar_at: Option<i64>,
+    pub avatar_at: i64,
 }
 
-pub const USER_SELECT: &str = "SELECT u.*, (SELECT updated_at FROM avatars a WHERE a.user_id = u.id) AS avatar_at FROM users u";
+pub const USER_SELECT: &str = "SELECT u.id, u.email, u.name, u.pass_hash, u.role, u.blocked, u.created_at, u.coins, u.pen, u.pens, u.guest, COALESCE(u.contact, '') AS contact, COALESCE((SELECT a.updated_at FROM avatars a WHERE a.user_id = u.id), 0) AS avatar_at FROM users u";
 
 fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
@@ -53,10 +54,11 @@ pub fn verify_password(p: &str, hash: &str) -> bool {
 }
 
 pub async fn user_by_token(st: &AppState, token: &str) -> Option<User> {
-    let u: Option<User> = sqlx::query_as(&format!("{USER_SELECT} JOIN sessions s ON s.user_id = u.id WHERE s.token_hash = ?"))
+    let u: Option<User> = sqlx::query_as(db::q(&format!("{USER_SELECT} JOIN sessions s ON s.user_id = u.id WHERE s.token_hash = ?")))
     .bind(hash_token(token))
     .fetch_optional(&st.pool)
     .await
+    .map_err(|e| eprintln!("session lookup failed: {e}"))
     .ok()
     .flatten();
     u.filter(|u| u.blocked == 0)

@@ -225,7 +225,7 @@ impl Room {
                 }
                 self.seats.retain(|s| s.tx.is_some());
                 if self.seats.len() < 2 {
-                    self.broadcast(&json!({ "t": "error", "msg": "Need at least 2 players to start" }).to_string());
+                    self.broadcast(&json!({ "t": "error", "msg": "শুরু করতে কমপক্ষে ২ জন খেলোয়াড় লাগবে" }).to_string());
                     return false;
                 }
                 self.begin();
@@ -286,7 +286,7 @@ impl Room {
         self.results = Value::Null;
         self.deadline = Instant::now() + Duration::from_secs(TURN_SECS);
         self.push_state();
-        self.log("Game on! Press anywhere, pull back and let go. Knock theirs off the desk.".into());
+        self.log("খেলা শুরু! বেঞ্চের যেকোনো জায়গায় চেপে পেছনে টেনে ছেড়ে দিন। অন্যের কলম ফেলে দিন।".into());
     }
 
     async fn tick(&mut self) -> bool {
@@ -330,7 +330,7 @@ impl Room {
             }
         } else if Instant::now() >= self.deadline {
             let name = self.seats[self.turn].name.clone();
-            self.log(format!("{name} ran out of time, turn skipped"));
+            self.log(format!("{name}-এর সময় শেষ, পালা বাদ"));
             self.next_turn();
             self.push_state();
         }
@@ -358,7 +358,7 @@ impl Room {
             s.alive = false;
             self.elim_counter += 1;
             s.elim = self.elim_counter;
-            let msg = format!("{}'s kolom fell off the desk!", s.name);
+            let msg = format!("{}-এর কলম বেঞ্চ থেকে পড়ে গেছে!", s.name);
             self.log(msg);
         }
         self.turns += 1;

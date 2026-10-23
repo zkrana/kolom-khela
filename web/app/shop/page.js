@@ -46,12 +46,12 @@ export default function Shop() {
     try { await api(path, { method: 'POST', body: { id } }); await load() } catch (e) { setError(e.message) } finally { setBusy('') }
   }
 
-  if (!me || !data) return <div className="wrap muted">{error || 'Loading...'}</div>
+  if (!me || !data) return <div className="wrap muted">{error || 'লোড হচ্ছে...'}</div>
   return (
     <div className="wrap">
       <Nav me={me} active="shop" />
-      <h1>Pen shop</h1>
-      <p className="muted">Win a game to earn {data.reward} coins. Heavier pens hit harder and are harder to knock off the desk. Longer pens reach further.</p>
+      <h1>কলমের দোকান</h1>
+      <p className="muted">একটা খেলা জিতলে {data.reward} কয়েন পাবেন। ভারী কলম জোরে মারে আর সহজে পড়ে না। লম্বা কলমের নাগাল বেশি।</p>
       {error && <p className="err" role="alert">{error}</p>}
       <div className="cards" style={{ marginTop: 14 }}>
         {data.pens.map((p) => (
@@ -59,15 +59,15 @@ export default function Shop() {
             <Preview id={p.id} hl={p.hl} r={p.r} />
             <div className="row between" style={{ marginTop: 10 }}>
               <h3 style={{ margin: 0 }}>{p.name}</h3>
-              {p.owned && <span className="pill">owned</span>}
+              {p.owned && <span className="pill">আছে</span>}
             </div>
             <p className="muted" style={{ margin: '4px 0 10px' }}>{p.desc}</p>
-            <Bar label="Weight" v={p.m} max={4.5} />
-            <Bar label="Reach" v={p.hl} max={80} />
+            <Bar label="ওজন" v={p.m} max={4.5} />
+            <Bar label="নাগাল" v={p.hl} max={80} />
             <div style={{ marginTop: 12 }}>
-              {data.selected === p.id ? <button disabled style={{ width: '100%' }}>In use</button>
-                : p.owned ? <button className="ghost" disabled={busy === p.id} onClick={() => act('/api/shop/select', p.id)} style={{ width: '100%' }}>Use this pen</button>
-                : <button disabled={busy === p.id || data.coins < p.price} onClick={() => act('/api/shop/buy', p.id)} style={{ width: '100%' }}>{data.coins < p.price ? `${p.price} coins (need ${p.price - data.coins} more)` : `Buy for ${p.price} coins`}</button>}
+              {data.selected === p.id ? <button disabled style={{ width: '100%' }}>ব্যবহার হচ্ছে</button>
+                : p.owned ? <button className="ghost" disabled={busy === p.id} onClick={() => act('/api/shop/select', p.id)} style={{ width: '100%' }}>এটা ব্যবহার করুন</button>
+                : <button disabled={busy === p.id || data.coins < p.price} onClick={() => act('/api/shop/buy', p.id)} style={{ width: '100%' }}>{data.coins < p.price ? `${p.price} কয়েন (আরও ${p.price - data.coins} লাগবে)` : `${p.price} কয়েনে কিনুন`}</button>}
             </div>
           </div>
         ))}
