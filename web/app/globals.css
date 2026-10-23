@@ -86,6 +86,9 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .player__sub { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 6px; }
 .player--empty { border-style: dashed; border-color: var(--line); background: transparent; }
 .player__slot { width: 34px; height: 34px; border-radius: 50%; border: 2px dashed var(--line); display: grid; place-items: center; color: var(--muted); font-size: 18px; }
+.player__remove { padding: 4px 9px; font-size: 13px; line-height: 1; }
+.avatar--bot { display: inline-grid; place-items: center; border-radius: 50%; background: linear-gradient(135deg, #3a4a6b, #1d2438); flex: none; }
+.addbot { width: 100%; margin: 2px 0 6px; padding: 9px; font-size: 14px; border-style: dashed; }
 
 /* lives, as filled pips */
 .lives { display: inline-flex; gap: 4px; flex: none; }

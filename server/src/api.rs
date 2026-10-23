@@ -305,7 +305,7 @@ async fn leaderboard(State(st): St) -> Res<Value> {
     let rows: Vec<(i64, String, i64, i64, i64)> = sqlx::query_as(
         db::q("SELECT p.user_id, MAX(p.name), CAST(SUM(CASE WHEN p.rank = 1 THEN 1 ELSE 0 END) AS BIGINT) AS wins, COUNT(*) AS played,
                 COALESCE((SELECT updated_at FROM avatars a WHERE a.user_id = p.user_id), 0)
-         FROM game_players p GROUP BY p.user_id ORDER BY wins DESC, played ASC LIMIT 10"),
+         FROM game_players p WHERE p.user_id > 0 GROUP BY p.user_id ORDER BY wins DESC, played ASC LIMIT 10"),
     )
     .fetch_all(&st.pool)
     .await
@@ -596,11 +596,13 @@ struct ClientMsg {
     lx: Option<f32>,
     ly: Option<f32>,
     level: Option<String>,
+    id: Option<i64>,
 }
 
 async fn play(socket: WebSocket, user: User, handle: room::RoomHandle) {
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = unbounded_channel::<String>();
+    let mine = tx.clone(); // names this connection when it closes, see Cmd::Leave
     if handle.tx.send(Cmd::Join { user_id: user.id, name: user.name.clone(), pen: user.pen.clone(), avatar: if user.avatar_at > 0 { Some(user.avatar_at) } else { None }, tx }).is_err() {
         let _ = sink.send(Message::Text(json!({ "t": "closed" }).to_string())).await;
         return;
@@ -635,6 +637,8 @@ async fn play(socket: WebSocket, user: User, handle: room::RoomHandle) {
             "start" => Cmd::Start { user_id: user.id },
             "difficulty" => Cmd::SetDifficulty { user_id: user.id, level: m.level.clone().unwrap_or_default() },
             "rematch" => Cmd::Rematch { user_id: user.id },
+            "bot_add" => Cmd::AddBot { user_id: user.id },
+            "bot_remove" => Cmd::RemoveBot { user_id: user.id, bot_id: m.id.unwrap_or(0) },
             "shoot" => Cmd::Shoot { user_id: user.id, dx: m.dx.unwrap_or(0.0), dy: m.dy.unwrap_or(0.0), power: m.power.unwrap_or(0.0), lx: m.lx.unwrap_or(0.0), ly: m.ly.unwrap_or(0.0) },
             _ => continue,
         };
@@ -642,6 +646,6 @@ async fn play(socket: WebSocket, user: User, handle: room::RoomHandle) {
             break;
         }
     }
-    let _ = handle.tx.send(Cmd::Leave { user_id: user.id });
+    let _ = handle.tx.send(Cmd::Leave { user_id: user.id, tx: mine });
     writer.abort();
 }

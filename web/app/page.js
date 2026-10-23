@@ -70,12 +70,12 @@ function Lobby({ me, reload }) {
   const [busy, setBusy] = useState(false)
 
   useEffect(() => { api('/api/leaderboard').then(setBoard).catch(() => {}) }, [])
-  const go = (c) => { window.location.href = `/room/?code=${encodeURIComponent(c)}` }
+  const go = (c, vsBot = false) => { window.location.href = `/room/?code=${encodeURIComponent(c)}${vsBot ? '&bot=1' : ''}` }
 
-  const create = async () => {
+  const create = async (vsBot) => {
     setBusy(true)
     setError('')
-    try { go((await api('/api/rooms', { method: 'POST' })).code) } catch (e) { setError(e.message); setBusy(false) }
+    try { go((await api('/api/rooms', { method: 'POST' })).code, vsBot) } catch (e) { setError(e.message); setBusy(false) }
   }
   const join = async (e) => {
     e.preventDefault()
@@ -110,7 +110,8 @@ function Lobby({ me, reload }) {
             <div className="stat"><b>{me.user.coins}</b>কয়েন</div>
           </div>
           <div style={{ marginTop: 18 }}>
-            <button onClick={create} disabled={busy} style={{ width: '100%', fontSize: 18, padding: 14 }}>নতুন খেলা শুরু করুন</button>
+            <button onClick={() => create(false)} disabled={busy} style={{ width: '100%', fontSize: 18, padding: 14 }}>বন্ধুদের সাথে খেলুন</button>
+            <button onClick={() => create(true)} disabled={busy} className="ghost" style={{ width: '100%', fontSize: 16, padding: 12, marginTop: 8 }}>🤖 কম্পিউটারের সাথে খেলুন</button>
           </div>
           <p className="muted" style={{ margin: '14px 0 6px' }}>অথবা বন্ধুর কোড দিয়ে ঢুকুন:</p>
           <form className="row" onSubmit={join} style={{ flexWrap: 'nowrap' }}>
@@ -122,10 +123,10 @@ function Lobby({ me, reload }) {
         <div className="card">
           <h2>কীভাবে খেলবেন</h2>
           <ol className="muted" style={{ paddingLeft: 18, margin: 0, lineHeight: 1.7 }}>
-            <li>২ থেকে ৪ জন, একটা বেঞ্চ, প্রত্যেকের একটা করে কলম।</li>
+            <li>২ থেকে ৪ জন, একটা বেঞ্চ, প্রত্যেকের একটা করে কলম। বন্ধু না থাকলে কম্পিউটারের সাথে খেলুন।</li>
             <li>নিজের পালায় বেঞ্চের যেকোনো জায়গায় চেপে পেছনে টেনে ছেড়ে দিন। যেদিকে টেনেছেন কলম সেদিকে ছুটবে। কলমের মাথার কাছে চাপলে সেটা ঘুরবে।</li>
-            <li>অন্যের কলমে ধাক্কা দিন। যে কলম বেঞ্চ থেকে পড়ে যাবে সে আউট।</li>
-            <li>সবার আগে যার কলম পড়বে সে <b>লুজার</b>। শেষ পর্যন্ত বেঞ্চে যার কলম থাকবে সে জিতবে <b>১০ কয়েন</b>।</li>
+            <li>অন্যের কলমে ধাক্কা দিয়ে বেঞ্চ থেকে ফেলে দিন। কলম পড়লে একটা প্রাণ যায় আর কলম নিজের কিনারায় ফিরে আসে। প্রাণ শেষ হলে আউট।</li>
+            <li>সবার আগে যে আউট হয় সে <b>লুজার</b>। শেষ পর্যন্ত টিকে থাকলে কয়েন: সহজে <b>৫</b>, মাঝারিতে <b>১০</b>, কঠিনে <b>২০</b> (শুধু কম্পিউটারের সাথে খেললে অর্ধেক)।</li>
             <li>কয়েন দিয়ে কলমের দোকান থেকে ভারী আর লম্বা কলম কিনুন।</li>
           </ol>
         </div>

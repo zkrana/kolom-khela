@@ -5,8 +5,6 @@ import { isMuted, setMuted, sfx } from '../../lib/sound'
 import { COLORS, DESKS, SIZE, drawAim, drawBoard, drawBody, drawTurnHint } from './draw'
 import { DifficultyPicker, EndOverlay, LEVELS, PlayerCard } from './panels'
 
-const TURN_SECS = { easy: 35, medium: 25, hard: 18 }
-
 function GuestJoin({ code, info, onDone }) {
   const [f, setF] = useState({ name: '', email: '' })
   const [error, setError] = useState('')
@@ -70,13 +68,15 @@ function ShareBar({ url, host }) {
   )
 }
 
-export default function Game({ code }) {
+export default function Game({ code, vsBot = false }) {
   const canvas = useRef(null)
   const ws = useRef(null)
   const bodies = useRef(new Map())
   const ghosts = useRef([])
   const spawns = useRef(new Map()) // id -> when it came back, for the flash
   const aim = useRef(null)
+  const botAim = useRef(null) // a computer player's pull-back, shown before its flick
+  const wantBot = useRef(vsBot) // came from "play with the computer": seat one as soon as the lobby is ours
   const st = useRef(null)
   const recvAt = useRef(0)
   const meRef = useRef(null)
@@ -151,6 +151,8 @@ export default function Game({ code }) {
           // The kolom is put back by the next state; this only says "flash it when it lands".
           for (const id of m.ids) spawns.current.set(id, performance.now() + 120)
           sfx.respawn()
+        } else if (m.t === 'aim') {
+          botAim.current = { ...m, until: performance.now() + 1100 }
         } else if (m.t === 'log') pushLog(m.msg)
         else if (m.t === 'error') pushLog(m.msg)
         else if (m.t === 'closed') { setConn('gone'); dead = true; s.close() }
@@ -177,6 +179,12 @@ export default function Game({ code }) {
   useEffect(() => { api(`/api/rooms/${code}`).then(setInvite0).catch(() => setInvite0(false)) }, [code])
 
   const send = (o) => { if (ws.current?.readyState === 1) ws.current.send(JSON.stringify(o)) }
+
+  useEffect(() => {
+    if (!wantBot.current || !state || !me || state.phase !== 'lobby' || state.host !== me.id) return
+    wantBot.current = false
+    if (!state.players.some((p) => p.bot)) send({ t: 'bot_add' })
+  }, [state, me])
 
   const mySeat = state && me ? state.players.findIndex((p) => p.id === me.id) : -1
   const myTurn = !!state && state.phase === 'playing' && !state.simulating && mySeat >= 0 && state.turn === mySeat && state.players[mySeat]?.alive
@@ -207,13 +215,27 @@ export default function Game({ code }) {
         const spawn = born ? Math.max(0, 1 - (t - born) / 650) : 0
         if (born && spawn <= 0) spawns.current.delete(b.id)
         // While you aim, your own name tag would sit under the power reading, so it steps aside.
-        const hideName = !!aim.current && b.id === mySeat
+        const hideName = (!!aim.current && b.id === mySeat) || botAim.current?.seat === b.id
         drawBody(ctx, b, t, { active: live && b.id === s.turn, name: hideName ? null : s?.players[b.id]?.name, seat: b.id, spawn })
       }
       ghosts.current = ghosts.current.filter((g) => t - g.born < 600)
       for (const g of ghosts.current) {
         const p = (t - g.born) / 600
         drawBody(ctx, { ...g, scale: 1 - p * 0.7, alpha: 1 - p }, t, { seat: g.id })
+      }
+      // The computer's aim, drawn with the same preview a person gets: the pull grows over half a second, the way a
+      // finger draws back, then holds until the flick.
+      const ba = botAim.current
+      if (ba && (t > ba.until || s?.simulating)) botAim.current = null
+      else if (ba) {
+        const bp = bodies.current.get(ba.seat)
+        if (bp) {
+          const c = Math.cos(bp.ang), sn = Math.sin(bp.ang)
+          const gx = bp.x + ba.lx * c - ba.ly * sn, gy = bp.y + ba.lx * sn + ba.ly * c
+          const len = Math.hypot(ba.dx, ba.dy) || 1
+          const pull = ba.power * 220 * Math.min(1, (1100 - (ba.until - t)) / 500)
+          drawAim(ctx, bp, { sx: gx, sy: gy, x: gx - (ba.dx / len) * pull, y: gy - (ba.dy / len) * pull, lx: ba.lx, ly: ba.ly }, s?.shot, t)
+        }
       }
       const pen = bodies.current.get(mySeat)
       if (aim.current && pen) {
@@ -277,19 +299,20 @@ export default function Game({ code }) {
   const level = LEVELS.find((l) => l.key === state?.difficulty)
   const lobby = state?.phase === 'lobby'
   const seats = state?.players || []
-  const enriched = state ? { ...state, turnSecs: TURN_SECS[state.difficulty] || 25 } : null
+  const onlyBots = seats.length > 1 && seats.every((p) => p.bot || p.id === me?.id)
 
   // The one line under the desk that says what to do right now.
   let prompt = { text: 'সংযোগ হচ্ছে...', tone: '' }
   if (state) {
-    if (lobby) prompt = { text: seats.length < 2 ? 'আরও একজন দরকার। ইনভাইট লিংক পাঠান।' : isHost ? 'সবাই এসে গেছে, খেলা শুরু করুন।' : 'হোস্টের শুরুর অপেক্ষায়...', tone: '' }
+    if (lobby) prompt = { text: seats.length < 2 ? 'আরও একজন দরকার। ইনভাইট লিংক পাঠান বা কম্পিউটার যোগ করুন।' : isHost ? 'সবাই এসে গেছে, খেলা শুরু করুন।' : 'হোস্টের শুরুর অপেক্ষায়...', tone: '' }
     else if (state.phase === 'over') prompt = { text: 'খেলা শেষ', tone: '' }
     else if (state.simulating) prompt = { text: 'কলম ছুটছে...', tone: 'go' }
     else if (myTurn) {
       prompt = shotInfo
         ? { text: shotInfo.danger ? `${shotInfo.power}% — এই শটে নিজের কলমই পড়ে যাবে!` : `${shotInfo.power}% শক্তি${shotInfo.spin ? ' · কলম ঘুরবে' : ''} — ছেড়ে দিন`, tone: shotInfo.danger ? 'bad' : 'go' }
         : { text: `আপনার পালা: বেঞ্চে চেপে পেছনে টেনে ছেড়ে দিন${left !== null ? ` · ${left} সে.` : ''}`, tone: 'you' }
-    } else prompt = { text: `${turnName}-এর পালা${left !== null ? ` · ${left} সে.` : ''}`, tone: '' }
+    } else if (state.players[state.turn]?.bot) prompt = { text: `🤖 ${turnName} ভাবছে...`, tone: '' }
+    else prompt = { text: `${turnName}-এর পালা${left !== null ? ` · ${left} সে.` : ''}`, tone: '' }
   }
 
   return (
@@ -321,21 +344,34 @@ export default function Game({ code }) {
               <h3 style={{ margin: 0 }}>খেলোয়াড়</h3>
               {!lobby && state?.phase !== 'over' && <span className="muted" style={{ fontSize: 12 }}>⚡ ফেলা · ❤ প্রাণ</span>}
             </div>
-            {seats.map((p) => <PlayerCard key={p.id} p={p} state={enriched} isMe={!!me && p.id === me.id} left={state.turn === p.seat ? left : null} />)}
+            {seats.map((p) => (
+              <PlayerCard
+                key={p.id}
+                p={p}
+                state={state}
+                isMe={!!me && p.id === me.id}
+                left={state.turn === p.seat && !p.bot ? left : null}
+                onRemove={lobby && isHost && p.bot ? () => send({ t: 'bot_remove', id: p.id }) : null}
+              />
+            ))}
             {lobby && Array.from({ length: Math.max(0, 2 - seats.length) }, (_, i) => (
               <div key={`empty${i}`} className="player player--empty"><span className="player__slot" aria-hidden="true">+</span><span className="muted">খালি চেয়ার</span></div>
             ))}
+
+            {lobby && isHost && seats.length < 4 && (
+              <button type="button" className="ghost addbot" onClick={() => { sfx.pick(); send({ t: 'bot_add' }) }}>🤖 কম্পিউটার যোগ করুন</button>
+            )}
 
             {lobby && (
               <div className="lobbybox">
                 <h3>মাত্রা বেছে নিন</h3>
                 <DifficultyPicker value={state.difficulty} canEdit={isHost} onPick={(level) => send({ t: 'difficulty', level })} />
-                <p className="muted levelblurb">{level?.blurb}{!isHost && ' হোস্ট বেছে নেবেন।'}</p>
+                <p className="muted levelblurb">{level?.blurb}{onlyBots && ' কম্পিউটারের সাথে জিতলে অর্ধেক কয়েন।'}{!isHost && ' হোস্ট বেছে নেবেন।'}</p>
                 <h3 style={{ marginTop: 14 }}>বন্ধুদের ডাকুন</h3>
                 <ShareBar url={invite} host={me?.name} />
                 <div style={{ marginTop: 10 }}>
                   {isHost
-                    ? <button onClick={() => { sfx.pick(); send({ t: 'start' }) }} disabled={seats.length < 2} className="bigcta">{seats.length < 2 ? 'দুজন লাগবে' : `খেলা শুরু করুন · ${level?.coins} কয়েন`}</button>
+                    ? <button onClick={() => { sfx.pick(); send({ t: 'start' }) }} disabled={seats.length < 2} className="bigcta">{seats.length < 2 ? 'দুজন লাগবে' : `খেলা শুরু করুন · ${state.reward} কয়েন`}</button>
                     : <p className="muted">হোস্ট খেলা শুরু করবেন।</p>}
                 </div>
               </div>

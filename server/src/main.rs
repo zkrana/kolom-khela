@@ -1,5 +1,6 @@
 mod api;
 mod auth;
+mod bot;
 mod db;
 mod email;
 mod guard;

@@ -4,8 +4,9 @@ import { useSearchParams } from 'next/navigation'
 import Game from './Game'
 
 function Inner() {
-  const code = (useSearchParams().get('code') || '').toUpperCase()
-  return code ? <Game code={code} /> : <div className="wrap">No room code. <a href="/">Back</a></div>
+  const q = useSearchParams()
+  const code = (q.get('code') || '').toUpperCase()
+  return code ? <Game code={code} vsBot={q.get('bot') === '1'} /> : <div className="wrap">No room code. <a href="/">Back</a></div>
 }
 
 export default function RoomPage() {

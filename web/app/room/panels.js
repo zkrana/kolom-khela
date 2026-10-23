@@ -38,6 +38,12 @@ export function DifficultyPicker({ value, canEdit, onPick }) {
   )
 }
 
+/** A person's picture or initial; a computer player is always the robot. */
+function Face({ p, size, ring }) {
+  if (!p.bot) return <Avatar id={p.id} name={p.name} at={p.avatar} size={size} ring={ring} />
+  return <span className="avatar avatar--bot" style={{ width: size, height: size, fontSize: size * 0.55, ...(ring ? { boxShadow: `0 0 0 3px ${ring}` } : {}) }} aria-hidden="true">🤖</span>
+}
+
 /** Lives left, as filled and spent pips. */
 export function Lives({ n, max, color }) {
   const total = Math.max(max || 0, n)
@@ -52,20 +58,21 @@ export function Lives({ n, max, color }) {
 }
 
 /** One row in the players panel: who, their pen, lives, and whose turn it is. */
-export function PlayerCard({ p, state, isMe, left }) {
+export function PlayerCard({ p, state, isMe, left, onRemove }) {
   const myTurn = state.phase === 'playing' && state.turn === p.seat && p.alive
   const share = myTurn && left != null && state.turnSecs ? Math.max(0, Math.min(1, left / state.turnSecs)) : 0
   return (
     <div className={`player ${myTurn ? 'turn' : ''} ${!p.alive ? 'out' : ''}`}>
-      <Avatar id={p.id} name={p.name} at={p.avatar} size={34} ring={COLORS[p.seat]} />
+      <Face p={p} size={34} ring={COLORS[p.seat]} />
       <span className="player__who">
         <b className="player__name">{p.name}{isMe ? ' (আপনি)' : ''}{state.host === p.id ? ' ★' : ''}</b>
         <span className="player__sub">
-          {PEN_NAMES[p.pen] || p.pen}
+          {p.bot ? 'কম্পিউটার · ' : ''}{PEN_NAMES[p.pen] || p.pen}
           {p.knocks > 0 && <span className="pill pill--knock" title="ফেলে দিয়েছে">⚡ {p.knocks}</span>}
         </span>
       </span>
       {!p.online && <span className="pill">নেই</span>}
+      {onRemove && <button type="button" className="ghost small player__remove" onClick={onRemove} aria-label={`${p.name}-কে সরান`} title="সরিয়ে দিন">✕</button>}
       {p.alive ? <Lives n={p.lives} max={state.maxLives} color={COLORS[p.seat]} /> : <span className="pill pill--out">আউট</span>}
       {myTurn && left != null && (
         <span className={`timer ${left <= 5 ? 'timer--low' : ''}`} style={{ '--share': share }}>
@@ -192,7 +199,7 @@ export function EndOverlay({ state, me, isHost, onRematch }) {
               style={{ animationDelay: `${(rows.length - 1 - i) * revealMs}ms` }}
             >
               <span className="result__rank">{r.rank === 1 ? '🥇' : r.rank === 2 ? '🥈' : r.rank === 3 ? '🥉' : r.rank}</span>
-              <Avatar id={r.id} name={r.name} at={r.avatar} size={36} />
+              <Face p={r} size={36} />
               <span className="result__who">
                 <b>{r.name}{me && r.id === me.id ? ' (আপনি)' : ''}</b>
                 <span className="result__stats">

@@ -1,13 +1,17 @@
 # Kolom Khela
 
-The childhood pen-flicking game from school benches, live in the browser. 2 to 4 players share one desk, one kolom (pen) each. On your turn you put your finger on your pen and flick it: touch the middle and it slides, touch near an end and it spins. Hit the other pens. A pen that leaves the desk is out; the first one out is the **looser**, the last one on the desk wins **10 coins**. Spend coins in the pen shop on heavier or longer pens (Econo, Matador, Gel grip, Fat marker, Steel fountain pen).
+The childhood pen-flicking game from school benches, live in the browser. 2 to 4 players share one desk, one kolom (pen) each, and empty chairs can be filled with computer players. On your turn you put your finger on your pen and flick it: touch the middle and it slides, touch near an end and it spins. Knock the other pens off the desk. A fallen pen costs a life and comes back; out of lives, you are out. The first one out is the **looser**, the last one standing wins coins. Spend coins in the pen shop on heavier or longer pens (Econo, Matador, Gel grip, Fat marker, Steel fountain pen).
+
+**How it works inside, the live setup, and answers to common developer questions: [DEVELOPER.md](DEVELOPER.md).**
 
 - **Server:** Rust (axum, WebSocket, SQLite). It owns all the physics and the rules, so nobody can cheat from the browser.
 - **Web:** Next.js, exported as plain static files and served by the same Rust process. No Node server in production.
 - **Accounts:** email, name and password only. Players invite friends with a room link or a 5-letter code.
 - **Profile:** `/profile/` lets a player add a picture (cropped and shrunk in the browser, stored in the database), rename and change password.
 - **Admin:** `/admin/` has an overview, a searchable player list (block, make admin, give or take coins, remove a picture, delete), live rooms (close) and recent games.
-- **Desk and sound:** four desk looks (school bench, green felt, ocean, classic) and synthesized sound effects, both chosen per browser.
+- **Levels:** easy, medium and hard, picked by the host (lives, flick speed, turn clock and coins all change).
+- **Computer players:** play alone against the computer, or fill empty chairs. It aims with the real physics and misses more on easier levels.
+- **Desk and sound:** five desk looks (school bench, slate, green felt, ocean, notebook page) and synthesized sound effects, both chosen per browser.
 
 ## Run it locally
 
@@ -23,7 +27,7 @@ ADMIN_EMAIL=you@example.com ADMIN_PASSWORD='a-long-password' cargo run --release
 
 For live editing of the page: run the server with `DEV_CORS=1`, then `cd web && npm run dev` (talks to port 8080).
 
-Tests for the physics: `cd server && cargo test`.
+Tests (physics, computer player, turn order, email filter, limits): `cd server && cargo test`.
 
 ## Settings (environment variables)
 
@@ -48,7 +52,14 @@ Build with the included `Dockerfile` (one container, about 10 MB of Rust binary 
 
 ## Rules recap
 
-1. Touch your kolom, pull back, let go. The longer the pull, the harder the flick. Where you touch decides how it spins.
-2. A kolom whose middle leaves the desk is out. The first one out is the looser.
-3. Last kolom on the desk wins 10 coins (at most 15 rewarded wins per player per 24 hours, so two accounts cannot farm each other).
-4. 25 seconds per turn, then the turn is skipped. After 60 flicks with nobody falling, the kolom nearest the middle wins.
+1. Touch your kolom, pull back, let go. The longer the pull, the harder the flick. Where you touch decides how it spins. The dotted line shows where it will stop.
+2. A kolom whose middle leaves the desk loses a life and comes back on its own edge. No lives left: out. The first one out is the looser.
+3. | | Easy | Medium | Hard |
+   |---|---|---|---|
+   | Lives | 3 | 2 | 1 |
+   | Turn clock | 35 s | 25 s | 18 s |
+   | Winner's coins | 5 | 10 | 20 |
+
+   Against only computers the winner gets half. At most 15 paid wins per player per 24 hours, so two accounts cannot farm each other.
+4. Turns go round the desk. A turn that runs out is skipped; three in a row and that player is out.
+5. If nobody falls for a long time (80 / 60 / 40 turns), the game ends: most lives left wins, then the kolom nearest the middle.
