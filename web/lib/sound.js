@@ -59,4 +59,12 @@ export const sfx = {
   win: () => [523, 659, 784, 1047].forEach((f, i) => tone(f, f, 0.22, 'triangle', 0.22, i * 0.12)),
   lose: () => [392, 330, 262].forEach((f, i) => tone(f, f * 0.97, 0.3, 'sine', 0.2, i * 0.16)),
   turn: () => tone(740, 740, 0.12, 'sine', 0.12),
+  /** A kolom with a life left coming back on the desk. */
+  respawn: () => { tone(330, 660, 0.18, 'sine', 0.16); tone(660, 990, 0.14, 'triangle', 0.1, 0.1) },
+  /** One coin landing in the pile; i stacks them into a rising run. */
+  coin: (i = 0) => tone(880 + i * 60, 1320 + i * 60, 0.1, 'triangle', 0.16),
+  /** The last seconds of a turn. */
+  tick: () => tone(1200, 1200, 0.05, 'square', 0.07),
+  /** Picking a difficulty, pressing a lobby button. */
+  pick: () => tone(520, 700, 0.08, 'sine', 0.1),
 }

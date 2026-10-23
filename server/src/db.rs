@@ -128,8 +128,9 @@ pub async fn migrate(pool: &AnyPool) {
     }
 }
 
-/// Coins for a win, with a daily cap so two accounts cannot farm each other. Returns what was actually paid.
-pub async fn reward_win(pool: &AnyPool, user_id: i64) -> i64 {
+/// Coins for a win (the amount depends on the difficulty), with a daily cap so two accounts cannot farm
+/// each other. Returns what was actually paid.
+pub async fn reward_win(pool: &AnyPool, user_id: i64, amount: i64) -> i64 {
     let recent: i64 = sqlx::query_scalar(q("SELECT COUNT(*) FROM games WHERE winner_id = ? AND finished_at > ?"))
         .bind(user_id)
         .bind(now() - 86_400)
@@ -139,8 +140,9 @@ pub async fn reward_win(pool: &AnyPool, user_id: i64) -> i64 {
     if recent >= crate::pens::DAILY_REWARDED_WINS {
         return 0;
     }
-    let _ = sqlx::query(q("UPDATE users SET coins = coins + ? WHERE id = ?")).bind(crate::pens::WIN_REWARD).bind(user_id).execute(pool).await;
-    crate::pens::WIN_REWARD
+    let amount = amount.clamp(0, 1000);
+    let _ = sqlx::query(q("UPDATE users SET coins = coins + ? WHERE id = ?")).bind(amount).bind(user_id).execute(pool).await;
+    amount
 }
 
 pub struct PlayerResult {

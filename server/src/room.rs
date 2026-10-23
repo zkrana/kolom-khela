@@ -11,13 +11,78 @@ use tokio::time::MissedTickBehavior;
 
 pub type Tx = UnboundedSender<String>;
 const MAX_SEATS: usize = 4;
-const TURN_SECS: u64 = 25;
 const MAX_SIM_TICKS: u32 = 60 * 14;
-const MAX_TURNS: u32 = 60; // nobody falls for this long: the pen nearest the middle wins
+
+/// How hard the match is. The host picks it in the lobby; everything that makes a game short and frustrating
+/// (one fall and you are out, a flick that crosses the whole desk, a short clock) eases off on the lower levels.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Difficulty {
+    Easy,
+    Medium,
+    Hard,
+}
+
+impl Difficulty {
+    pub fn parse(s: &str) -> Difficulty {
+        match s {
+            "easy" => Difficulty::Easy,
+            "hard" => Difficulty::Hard,
+            _ => Difficulty::Medium,
+        }
+    }
+    pub fn key(self) -> &'static str {
+        match self {
+            Difficulty::Easy => "easy",
+            Difficulty::Medium => "medium",
+            Difficulty::Hard => "hard",
+        }
+    }
+    /// How many times a kolom may fall before its owner is out.
+    pub fn lives(self) -> u32 {
+        match self {
+            Difficulty::Easy => 3,
+            Difficulty::Medium => 2,
+            Difficulty::Hard => 1,
+        }
+    }
+    /// Share of the engine's top speed a full-power flick gets. Slower is easier to aim and, with the home margin
+    /// in game::home_spot, leaves more room before a shot at your own edge costs a life.
+    pub fn speed(self) -> f32 {
+        match self {
+            Difficulty::Easy => 0.60,
+            Difficulty::Medium => 0.72,
+            Difficulty::Hard => 0.85,
+        }
+    }
+    pub fn turn_secs(self) -> u64 {
+        match self {
+            Difficulty::Easy => 35,
+            Difficulty::Medium => 25,
+            Difficulty::Hard => 18,
+        }
+    }
+    /// Nobody falls for this many turns: the kolom nearest the middle wins.
+    pub fn max_turns(self) -> u32 {
+        match self {
+            Difficulty::Easy => 80,
+            Difficulty::Medium => 60,
+            Difficulty::Hard => 40,
+        }
+    }
+    /// Coins for the winner. A harder game is worth more.
+    pub fn reward(self) -> i64 {
+        match self {
+            Difficulty::Easy => 5,
+            Difficulty::Medium => 10,
+            Difficulty::Hard => 20,
+        }
+    }
+}
 
 pub enum Cmd {
     Join { user_id: i64, name: String, pen: String, avatar: Option<i64>, tx: Tx },
     Leave { user_id: i64 },
+    SetDifficulty { user_id: i64, level: String },
     Start { user_id: i64 },
     Rematch { user_id: i64 },
     Shoot { user_id: i64, dx: f32, dy: f32, power: f32, lx: f32, ly: f32 },
@@ -54,7 +119,12 @@ struct Seat {
     tx: Option<Tx>,
     reward: i64,
     alive: bool,
-    elim: u32, // 0 = still in; otherwise the order the kolom fell (1 = first = the looser)
+    /// Falls left before this player is out. It starts at the difficulty's lives and never goes back up in a game.
+    lives: u32,
+    /// Other players' koloms this one knocked off the desk, and its own falls: shown at the end.
+    knocks: u32,
+    falls: u32,
+    elim: u32, // 0 = still in; otherwise the order the player ran out of lives (1 = first = the looser)
 }
 
 struct Room {
@@ -65,6 +135,7 @@ struct Room {
     seats: Vec<Seat>,
     watchers: Vec<(i64, Tx)>,
     phase: Phase,
+    difficulty: Difficulty,
     bodies: Vec<Body>,
     turn: usize,
     deadline: Instant,
@@ -90,6 +161,7 @@ pub fn spawn_room(state: Arc<AppState>, code: String, host_id: i64, host_name: S
         seats: Vec::new(),
         watchers: Vec::new(),
         phase: Phase::Lobby,
+        difficulty: Difficulty::Medium,
         bodies: Vec::new(),
         turn: 0,
         deadline: Instant::now(),
@@ -158,7 +230,13 @@ impl Room {
             .seats
             .iter()
             .enumerate()
-            .map(|(i, s)| json!({ "seat": i, "id": s.user_id, "name": s.name, "pen": s.pen, "avatar": s.avatar, "alive": s.alive, "online": s.tx.is_some() }))
+            .map(|(i, s)| {
+                json!({
+                    "seat": i, "id": s.user_id, "name": s.name, "pen": s.pen, "avatar": s.avatar,
+                    "alive": s.alive, "online": s.tx.is_some(),
+                    "lives": s.lives, "knocks": s.knocks, "falls": s.falls,
+                })
+            })
             .collect();
         let bodies: Vec<&Body> = self.bodies.iter().filter(|b| b.alive).collect();
         let left = if self.phase == Phase::Playing && !self.sim { self.deadline.saturating_duration_since(Instant::now()).as_millis() as u64 } else { 0 };
@@ -167,6 +245,11 @@ impl Room {
             "code": self.code,
             "phase": match self.phase { Phase::Lobby => "lobby", Phase::Playing => "playing", Phase::Over => "over" },
             "host": self.host_id,
+            "difficulty": self.difficulty.key(),
+            // What a full-power flick does, so the page can draw an honest preview of where the kolom will stop.
+            "shot": { "speed": game::MAX_SPEED * self.difficulty.speed(), "damp": game::DAMP, "spinDamp": game::SPIN_DAMP, "maxSpin": game::MAX_SPIN },
+            "maxLives": self.difficulty.lives(),
+            "reward": self.difficulty.reward(),
             "players": players,
             "turn": self.turn,
             "simulating": self.sim,
@@ -198,7 +281,8 @@ impl Room {
                         seat.pen = pen;
                     }
                 } else if self.phase == Phase::Lobby && self.seats.len() < MAX_SEATS {
-                    self.seats.push(Seat { user_id, name, pen, avatar, tx: Some(tx), reward: 0, alive: true, elim: 0 });
+                    let lives = self.difficulty.lives();
+                    self.seats.push(Seat { user_id, name, pen, avatar, tx: Some(tx), reward: 0, alive: true, lives, knocks: 0, falls: 0, elim: 0 });
                 } else {
                     self.watchers.retain(|(id, _)| *id != user_id);
                     self.watchers.push((user_id, tx));
@@ -219,6 +303,21 @@ impl Room {
                 }
                 self.push_state();
             }
+            Cmd::SetDifficulty { user_id, level } => {
+                // Only the host, and only between games, so nobody can change the rules mid-match.
+                if user_id != self.host_id || self.phase == Phase::Playing {
+                    return false;
+                }
+                let next = Difficulty::parse(&level);
+                if next == self.difficulty {
+                    return false;
+                }
+                self.difficulty = next;
+                for s in self.seats.iter_mut() {
+                    s.lives = next.lives();
+                }
+                self.push_state();
+            }
             Cmd::Start { user_id } => {
                 if user_id != self.host_id || self.phase != Phase::Lobby {
                     return false;
@@ -235,9 +334,13 @@ impl Room {
                     return false;
                 }
                 self.seats.retain(|s| s.tx.is_some());
+                let lives = self.difficulty.lives();
                 for s in self.seats.iter_mut() {
                     s.reward = 0;
                     s.alive = true;
+                    s.lives = lives;
+                    s.knocks = 0;
+                    s.falls = 0;
                     s.elim = 0;
                 }
                 self.results = Value::Null;
@@ -258,8 +361,9 @@ impl Room {
                     return false;
                 }
                 let p = power.clamp(0.05, 1.0);
+                let top = game::MAX_SPEED * self.difficulty.speed();
                 if let Some(pen) = self.bodies.iter_mut().find(|b| b.id == self.turn as u32 && b.alive) {
-                    game::flick(pen, dx, dy, p * game::MAX_SPEED, lx, ly);
+                    game::flick(pen, dx, dy, p * top, lx, ly);
                     self.sim = true;
                     self.sim_ticks = 0;
                     self.fell.clear();
@@ -271,9 +375,13 @@ impl Room {
     }
 
     fn begin(&mut self) {
+        let lives = self.difficulty.lives();
         for s in self.seats.iter_mut() {
             s.reward = 0;
             s.alive = true;
+            s.lives = lives;
+            s.knocks = 0;
+            s.falls = 0;
             s.elim = 0;
         }
         let specs: Vec<&crate::pens::Pen> = self.seats.iter().map(|s| crate::pens::find_or_default(&s.pen)).collect();
@@ -284,9 +392,10 @@ impl Room {
         self.elim_counter = 0;
         self.sim = false;
         self.results = Value::Null;
-        self.deadline = Instant::now() + Duration::from_secs(TURN_SECS);
+        self.deadline = Instant::now() + Duration::from_secs(self.difficulty.turn_secs());
         self.push_state();
-        self.log("খেলা শুরু! বেঞ্চের যেকোনো জায়গায় চেপে পেছনে টেনে ছেড়ে দিন। অন্যের কলম ফেলে দিন।".into());
+        let lives = self.difficulty.lives();
+        self.log(format!("খেলা শুরু! প্রত্যেকের {lives}টি করে প্রাণ। বেঞ্চে চেপে পেছনে টেনে ছেড়ে দিন, অন্যের কলম ফেলে দিন।"));
     }
 
     async fn tick(&mut self) -> bool {
@@ -344,7 +453,7 @@ impl Room {
             if self.seats[i].alive {
                 self.turn = i;
                 // A player who left gets a short turn so the game never waits on an empty chair.
-                let secs = if self.seats[i].tx.is_some() { TURN_SECS } else { 3 };
+                let secs = if self.seats[i].tx.is_some() { self.difficulty.turn_secs() } else { 3 };
                 self.deadline = Instant::now() + Duration::from_secs(secs);
                 return;
             }
@@ -353,17 +462,46 @@ impl Room {
 
     async fn finish_turn(&mut self) {
         let fell = std::mem::take(&mut self.fell);
+        let shooter = self.turn;
+        let players = self.seats.len();
+        let mut back: Vec<u32> = Vec::new();
+
         for id in fell {
-            let s = &mut self.seats[id as usize];
-            s.alive = false;
-            self.elim_counter += 1;
-            s.elim = self.elim_counter;
-            let msg = format!("{}-এর কলম বেঞ্চ থেকে পড়ে গেছে!", s.name);
-            self.log(msg);
+            let seat = id as usize;
+            let own_goal = seat == shooter;
+            let (name, lives, out) = {
+                let s = &mut self.seats[seat];
+                s.falls += 1;
+                s.lives = s.lives.saturating_sub(1);
+                (s.name.clone(), s.lives, s.lives == 0)
+            };
+            // The shooter gets the credit, unless they knocked their own kolom off.
+            if !own_goal {
+                self.seats[shooter].knocks += 1;
+            }
+            if out {
+                self.seats[seat].alive = false;
+                self.elim_counter += 1;
+                self.seats[seat].elim = self.elim_counter;
+                self.log(format!("{name}-এর কলম পড়ে গেছে। প্রাণ শেষ, {name} আউট!"));
+            } else {
+                back.push(id);
+                let word = if own_goal { "নিজের কলমই ফেলে দিলেন" } else { "কলম পড়ে গেছে" };
+                self.log(format!("{name}-এর {word}। আর {lives}টি প্রাণ বাকি।"));
+            }
         }
+
+        // Everyone who still has a life comes back on their own edge before the next turn.
+        for id in &back {
+            game::respawn(&mut self.bodies, *id, players);
+        }
+        if !back.is_empty() {
+            self.broadcast(&json!({ "t": "respawn", "ids": back }).to_string());
+        }
+
         self.turns += 1;
         let alive = self.seats.iter().filter(|s| s.alive).count();
-        if alive <= 1 || self.turns >= MAX_TURNS {
+        if alive <= 1 || self.turns >= self.difficulty.max_turns() {
             self.finish_game().await;
             return;
         }
@@ -388,7 +526,7 @@ impl Room {
         let first_fallen = self.seats.iter().filter(|s| s.elim > 0).min_by_key(|s| s.elim).map(|s| s.user_id);
         let looser_id = first_fallen.or_else(|| order.last().map(|&i| self.seats[i].user_id));
         let winner_idx = order[0];
-        let reward = db::reward_win(&self.state.pool, self.seats[winner_idx].user_id).await;
+        let reward = db::reward_win(&self.state.pool, self.seats[winner_idx].user_id, self.difficulty.reward()).await;
         self.seats[winner_idx].reward = reward;
         let results: Vec<PlayerResult> = order
             .iter()
@@ -401,9 +539,18 @@ impl Room {
                 looser: Some(self.seats[i].user_id) == looser_id,
             })
             .collect();
-        self.results = json!(results
+        self.results = json!(order
             .iter()
-            .map(|r| json!({ "id": r.user_id, "name": r.name, "reward": r.coins, "rank": r.rank, "looser": r.looser }))
+            .enumerate()
+            .map(|(rank, &i)| {
+                let s = &self.seats[i];
+                json!({
+                    "id": s.user_id, "name": s.name, "avatar": s.avatar, "pen": s.pen,
+                    "reward": s.reward, "rank": rank as i64 + 1,
+                    "looser": Some(s.user_id) == looser_id,
+                    "knocks": s.knocks, "falls": s.falls, "lives": s.lives,
+                })
+            })
             .collect::<Vec<_>>());
         db::save_game(&self.state.pool, &self.code, &results).await;
         self.phase = Phase::Over;

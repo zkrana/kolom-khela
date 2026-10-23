@@ -6,8 +6,10 @@ pub const W: f32 = 800.0;
 pub const H: f32 = 800.0;
 pub const DT: f32 = 1.0 / 60.0;
 pub const MAX_SPEED: f32 = 1500.0;
-const DAMP: f32 = 2.8; // per second
-const SPIN_DAMP: f32 = 3.5;
+/// Speed lost per second. A flick with no collisions travels speed/DAMP, which is what the page draws as the
+/// predicted stopping point, so this number is sent to the browser rather than copied there.
+pub const DAMP: f32 = 2.8;
+pub const SPIN_DAMP: f32 = 3.5;
 const REST: f32 = 0.88; // bounciness
 const STOP: f32 = 7.0;
 
@@ -49,13 +51,64 @@ impl Body {
     }
 }
 
-fn pen_spot(seat: usize, players: usize) -> (f32, f32, f32) {
-    // x, y, angle: a kolom starts lying along its own edge of the desk.
-    let spots = [(W / 2.0, H - 80.0, 0.0), (W / 2.0, 80.0, 0.0), (80.0, H / 2.0, std::f32::consts::FRAC_PI_2), (W - 80.0, H / 2.0, std::f32::consts::FRAC_PI_2)];
+/// x, y, angle: where a kolom starts, lying along its own edge of the desk.
+///
+/// The margin is chosen together with the per-difficulty flick speeds (see Difficulty::speed): a full-power flick
+/// travels speed/DAMP, so with 175 here a flick straight back at the near edge only falls off above roughly half
+/// power on Easy and a third on Hard. It also keeps the two facing koloms 450 apart, which is further than one
+/// full-power flick: you walk your kolom across the desk over a few turns instead of one-shotting from home.
+pub fn home_spot(seat: usize, players: usize) -> (f32, f32, f32) {
+    const M: f32 = 175.0;
+    let spots = [(W / 2.0, H - M, 0.0), (W / 2.0, M, 0.0), (M, H / 2.0, std::f32::consts::FRAC_PI_2), (W - M, H / 2.0, std::f32::consts::FRAC_PI_2)];
     if players == 3 && seat == 2 {
         return spots[2];
     }
     spots[seat.min(3)]
+}
+
+/// True when this body would touch any other living one at (x, y, ang).
+fn spot_taken(bodies: &[Body], id: u32, x: f32, y: f32, ang: f32, hl: f32, r: f32) -> bool {
+    let (c, s) = (ang.cos() * hl, ang.sin() * hl);
+    let (p0, p1) = ((x - c, y - s), (x + c, y + s));
+    bodies.iter().filter(|b| b.alive && b.id != id).any(|b| {
+        let (q0, q1) = b.ends();
+        let (ca, cb) = closest(p0, p1, q0, q1);
+        (ca.0 - cb.0).hypot(ca.1 - cb.1) < r + b.r + 14.0
+    })
+}
+
+/// Puts a fallen kolom back on the desk at its own edge. If that spot is taken it slides along the edge and then
+/// a little further in, so a respawn never drops one pen on top of another. Returns false when the id is unknown.
+pub fn respawn(bodies: &mut [Body], id: u32, players: usize) -> bool {
+    let Some(idx) = bodies.iter().position(|b| b.id == id) else { return false };
+    let (hx, hy, ang) = home_spot(id as usize, players);
+    let (hl, r) = (bodies[idx].hl, bodies[idx].r);
+    // Along its own edge, and away from that edge towards the middle.
+    let along = if ang.abs() < 0.1 { (1.0, 0.0) } else { (0.0, 1.0) };
+    let inward = ((W / 2.0 - hx).signum() * (1.0 - along.0), (H / 2.0 - hy).signum() * (1.0 - along.1));
+    let mut spot = (hx, hy);
+    'search: for step_in in [0.0f32, 70.0, 140.0] {
+        for side in [0.0f32, 90.0, -90.0, 180.0, -180.0] {
+            let x = hx + along.0 * side + inward.0 * step_in;
+            let y = hy + along.1 * side + inward.1 * step_in;
+            if x < 60.0 || x > W - 60.0 || y < 60.0 || y > H - 60.0 {
+                continue;
+            }
+            if !spot_taken(bodies, id, x, y, ang, hl, r) {
+                spot = (x, y);
+                break 'search;
+            }
+        }
+    }
+    let b = &mut bodies[idx];
+    b.x = spot.0;
+    b.y = spot.1;
+    b.ang = ang;
+    b.vx = 0.0;
+    b.vy = 0.0;
+    b.w = 0.0;
+    b.alive = true;
+    true
 }
 
 pub fn new_board(pens: &[&Pen]) -> Vec<Body> {
@@ -63,7 +116,7 @@ pub fn new_board(pens: &[&Pen]) -> Vec<Body> {
     pens.iter()
         .enumerate()
         .map(|(s, p)| {
-            let (x, y, a) = pen_spot(s, n);
+            let (x, y, a) = home_spot(s, n);
             Body::new(s as u32, p.id, x, y, a, p.hl, p.r, p.m)
         })
         .collect()
@@ -276,6 +329,63 @@ mod tests {
             step(&mut b);
         }
         assert!(b[1].vy != 0.0 || b[1].w != 0.0 || b[1].y != 560.0);
+    }
+
+    #[test]
+    fn a_fallen_kolom_comes_back_to_its_own_edge() {
+        let mut b = board2();
+        flick(&mut b[0], 0.0, 1.0, 1500.0, 0.0, 0.0);
+        for _ in 0..600 {
+            step(&mut b);
+        }
+        assert!(!b[0].alive, "it should have fallen first");
+        assert!(respawn(&mut b, 0, 2));
+        let (hx, hy, _) = home_spot(0, 2);
+        assert!(b[0].alive && b[0].x == hx && b[0].y == hy);
+        assert!(b[0].vx == 0.0 && b[0].vy == 0.0 && b[0].w == 0.0, "it comes back still");
+    }
+
+    #[test]
+    fn a_respawn_never_lands_on_another_kolom() {
+        let mut b = board2();
+        let (hx, hy, ang) = home_spot(0, 2);
+        b[1].x = hx; // the other pen is parked exactly on the home spot
+        b[1].y = hy;
+        b[1].ang = ang;
+        b[0].alive = false;
+        assert!(respawn(&mut b, 0, 2));
+        let (a0, a1) = b[0].ends();
+        let (c0, c1) = b[1].ends();
+        let (ca, cb) = closest(a0, a1, c0, c1);
+        assert!((ca.0 - cb.0).hypot(ca.1 - cb.1) >= b[0].r + b[1].r, "the two pens must not overlap");
+    }
+
+    /// The home margin and the difficulty speeds are one design: on Easy a half-power flick straight at your own
+    /// edge is still safe, on Hard the same shot already costs you a life. If either number changes, this says so.
+    #[test]
+    fn half_power_backwards_is_safe_on_easy_and_fatal_on_hard() {
+        for (share, should_live) in [(0.60f32, true), (0.85f32, false)] {
+            let mut b = board2();
+            flick(&mut b[0], 0.0, 1.0, MAX_SPEED * share * 0.5, 0.0, 0.0);
+            for _ in 0..600 {
+                step(&mut b);
+            }
+            assert_eq!(b[0].alive, should_live, "half power at speed share {share}");
+        }
+    }
+
+    /// One full-power flick must not reach the facing kolom from home: the desk is crossed over several turns.
+    #[test]
+    fn a_full_power_flick_does_not_cross_the_whole_desk() {
+        let mut b = board2();
+        let start = b[0].y;
+        flick(&mut b[0], 0.0, -1.0, MAX_SPEED * 0.85, 0.0, 0.0);
+        for _ in 0..900 {
+            step(&mut b);
+        }
+        let travelled = start - b[0].y;
+        let gap = H - 2.0 * 175.0;
+        assert!(b[0].alive && travelled < gap, "travelled {travelled} of the {gap} between the two home spots");
     }
 
     #[test]

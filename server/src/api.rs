@@ -593,6 +593,7 @@ struct ClientMsg {
     power: Option<f32>,
     lx: Option<f32>,
     ly: Option<f32>,
+    level: Option<String>,
 }
 
 async fn play(socket: WebSocket, user: User, handle: room::RoomHandle) {
@@ -622,6 +623,7 @@ async fn play(socket: WebSocket, user: User, handle: room::RoomHandle) {
         let Ok(m) = serde_json::from_str::<ClientMsg>(&text) else { continue };
         let cmd = match m.t.as_str() {
             "start" => Cmd::Start { user_id: user.id },
+            "difficulty" => Cmd::SetDifficulty { user_id: user.id, level: m.level.clone().unwrap_or_default() },
             "rematch" => Cmd::Rematch { user_id: user.id },
             "shoot" => Cmd::Shoot { user_id: user.id, dx: m.dx.unwrap_or(0.0), dy: m.dy.unwrap_or(0.0), power: m.power.unwrap_or(0.0), lx: m.lx.unwrap_or(0.0), ly: m.ly.unwrap_or(0.0) },
             _ => continue,

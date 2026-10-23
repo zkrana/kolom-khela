@@ -17,6 +17,7 @@ pub const PENS: &[Pen] = &[
     Pen { id: "steel", name: "স্টিলের ফাউন্টেন পেন", desc: "ক্লাসের সবচেয়ে ভারী কলম।", price: 250, hl: 80.0, r: 9.0, m: 4.4 },
 ];
 
+/// What an ordinary (medium) win pays; the room scales it by difficulty. The shop quotes this as the going rate.
 pub const WIN_REWARD: i64 = 10;
 pub const DAILY_REWARDED_WINS: i64 = 15;
 

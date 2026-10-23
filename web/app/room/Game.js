@@ -1,137 +1,11 @@
 'use client'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, getToken, setToken, wsUrl } from '../../lib/api'
-import { drawPen, PEN_NAMES } from '../../lib/pens'
-import { Avatar } from '../../lib/ui'
 import { isMuted, setMuted, sfx } from '../../lib/sound'
+import { COLORS, DESKS, SIZE, drawAim, drawBoard, drawBody, drawTurnHint } from './draw'
+import { DifficultyPicker, EndOverlay, LEVELS, PlayerCard } from './panels'
 
-const COLORS = ['#2f6df6', '#e53935', '#1faa59', '#8e44ad'] // one colour per player: name tag and the lobby list
-const SIZE = 800
-
-// Desk looks. Each is painted once into an offscreen canvas and then just copied every frame.
-export const DESKS = {
-  bench: { label: 'স্কুলের বেঞ্চ', swatch: 'linear-gradient(135deg,#e0a867,#b4773c)' },
-  felt: { label: 'সবুজ কাপড়', swatch: 'linear-gradient(135deg,#2aa371,#146b47)' },
-  ocean: { label: 'সাগর', swatch: 'linear-gradient(135deg,#3b9be0,#1c4f93)' },
-  classic: { label: 'সাদামাটা', swatch: 'linear-gradient(135deg,#efebe0,#d8d2c2)' },
-}
-const deskCache = new Map()
-
-function rng(seed) {
-  let a = seed
-  return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296 }
-}
-
-function paintDesk(key) {
-  const cv = document.createElement('canvas')
-  cv.width = cv.height = SIZE
-  const c = cv.getContext('2d')
-  const r = rng(7)
-  if (key === 'bench') {
-    // planks of warm honey wood with grain
-    for (let y = 0, i = 0; y < SIZE; y += 100, i++) {
-      const l = 0.5 + r() * 0.12
-      c.fillStyle = `hsl(${28 + r() * 6},${52 + r() * 8}%,${44 + l * 14}%)`
-      c.fillRect(0, y, SIZE, 100)
-      for (let k = 0; k < 14; k++) {
-        c.strokeStyle = `rgba(90,50,15,${0.05 + r() * 0.09})`
-        c.lineWidth = 1 + r() * 2
-        const gy = y + 6 + r() * 88
-        c.beginPath(); c.moveTo(0, gy)
-        c.bezierCurveTo(SIZE * 0.3, gy + (r() - 0.5) * 14, SIZE * 0.65, gy + (r() - 0.5) * 14, SIZE, gy + (r() - 0.5) * 8)
-        c.stroke()
-      }
-      c.fillStyle = 'rgba(60,30,8,.45)'
-      c.fillRect(0, y, SIZE, 2.5)
-      c.fillStyle = 'rgba(255,230,190,.18)'
-      c.fillRect(0, y + 2.5, SIZE, 1.5)
-      c.fillStyle = 'rgba(60,30,8,.35)' // plank joins
-      c.fillRect(150 + r() * 500, y, 2.5, 100)
-    }
-  } else if (key === 'felt') {
-    const g = c.createRadialGradient(SIZE / 2, SIZE / 2, 80, SIZE / 2, SIZE / 2, SIZE * 0.75)
-    g.addColorStop(0, '#2ba873'); g.addColorStop(1, '#10603f')
-    c.fillStyle = g; c.fillRect(0, 0, SIZE, SIZE)
-    for (let i = 0; i < 9000; i++) { c.fillStyle = r() > 0.5 ? 'rgba(255,255,255,.05)' : 'rgba(0,0,0,.07)'; c.fillRect(r() * SIZE, r() * SIZE, 2, 2) }
-    c.strokeStyle = 'rgba(255,255,255,.22)'; c.lineWidth = 3
-    c.beginPath(); c.arc(SIZE / 2, SIZE / 2, 120, 0, 7); c.stroke()
-  } else if (key === 'ocean') {
-    const g = c.createLinearGradient(0, 0, SIZE, SIZE)
-    g.addColorStop(0, '#46a6ea'); g.addColorStop(1, '#1b4a8f')
-    c.fillStyle = g; c.fillRect(0, 0, SIZE, SIZE)
-    c.strokeStyle = 'rgba(255,255,255,.07)'; c.lineWidth = 14
-    for (let d = -SIZE; d < SIZE * 2; d += 60) { c.beginPath(); c.moveTo(d, 0); c.lineTo(d - SIZE, SIZE); c.stroke() }
-  } else {
-    c.fillStyle = '#e8e4da'; c.fillRect(0, 0, SIZE, SIZE)
-    c.fillStyle = 'rgba(120,110,95,.18)'
-    for (let y = 14; y < SIZE; y += 22) for (let x = ((y / 22) % 2) * 11 + 6; x < SIZE; x += 22) c.fillRect(x, y, 2, 2)
-  }
-  // soft light in the middle, darker towards the corners
-  const v = c.createRadialGradient(SIZE / 2, SIZE / 2, SIZE * 0.25, SIZE / 2, SIZE / 2, SIZE * 0.78)
-  v.addColorStop(0, 'rgba(255,255,255,.10)'); v.addColorStop(1, 'rgba(0,0,0,.28)')
-  c.fillStyle = v; c.fillRect(0, 0, SIZE, SIZE)
-  // the drop-off at every edge
-  for (const [x, y, w, h, gx, gy, gw, gh] of [[0, 0, SIZE, 26, 0, 0, 0, 26], [0, SIZE - 26, SIZE, 26, 0, SIZE, 0, -26], [0, 0, 26, SIZE, 0, 0, 26, 0], [SIZE - 26, 0, 26, SIZE, SIZE, 0, -26, 0]]) {
-    const lg = c.createLinearGradient(gx, gy, gx + gw, gy + gh)
-    lg.addColorStop(0, 'rgba(25,14,5,.6)'); lg.addColorStop(1, 'rgba(25,14,5,0)')
-    c.fillStyle = lg; c.fillRect(x, y, w, h)
-  }
-  return cv
-}
-
-function drawBoard(ctx, key) {
-  let cv = deskCache.get(key)
-  if (!cv) { cv = paintDesk(key); deskCache.set(key, cv) }
-  ctx.drawImage(cv, 0, 0)
-}
-
-function capsule(ctx, hl, r) {
-  ctx.beginPath()
-  ctx.moveTo(-hl, -r)
-  ctx.lineTo(hl, -r)
-  ctx.arc(hl, 0, r, -Math.PI / 2, Math.PI / 2)
-  ctx.lineTo(-hl, r)
-  ctx.arc(-hl, 0, r, Math.PI / 2, Math.PI * 1.5)
-  ctx.closePath()
-}
-
-function drawBody(ctx, b, t, active, name, seat) {
-  const s = b.scale ?? 1
-  ctx.save()
-  ctx.translate(b.x, b.y)
-  ctx.scale(s, s)
-  ctx.globalAlpha = b.alpha ?? 1
-  ctx.rotate(b.ang || 0)
-  ctx.save()
-  ctx.translate(4, 7)
-  ctx.fillStyle = 'rgba(0,0,0,.22)'
-  capsule(ctx, b.hl, b.r)
-  ctx.fill()
-  ctx.restore()
-  if (active) {
-    ctx.strokeStyle = '#ff9f1c'
-    ctx.lineWidth = 4
-    ctx.globalAlpha = (b.alpha ?? 1) * (0.45 + 0.4 * Math.sin(t / 150))
-    capsule(ctx, b.hl + 7, b.r + 7)
-    ctx.stroke()
-    ctx.globalAlpha = b.alpha ?? 1
-  }
-  drawPen(ctx, b.style, b.hl, b.r)
-  ctx.restore()
-  if (name && !b.scale) {
-    ctx.save()
-    ctx.font = 'bold 15px system-ui'
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'middle'
-    const y = b.y - (Math.abs(Math.sin(b.ang || 0)) * (b.hl + b.r) + 24)
-    const w = ctx.measureText(name).width + 16
-    ctx.fillStyle = COLORS[seat % 4]
-    ctx.beginPath(); ctx.roundRect(b.x - w / 2, y - 11, w, 22, 11); ctx.fill()
-    ctx.fillStyle = seat % 4 === 3 ? '#fff' : '#fff'
-    ctx.fillText(name, b.x, y + 1)
-    ctx.restore()
-  }
-}
+const TURN_SECS = { easy: 35, medium: 25, hard: 18 }
 
 function GuestJoin({ code, info, onDone }) {
   const [f, setF] = useState({ name: '', email: '' })
@@ -201,10 +75,12 @@ export default function Game({ code }) {
   const ws = useRef(null)
   const bodies = useRef(new Map())
   const ghosts = useRef([])
+  const spawns = useRef(new Map()) // id -> when it came back, for the flash
   const aim = useRef(null)
   const st = useRef(null)
   const recvAt = useRef(0)
   const meRef = useRef(null)
+  const lastTick = useRef(0)
   const [state, setState] = useState(null)
   const [me, setMe] = useState(null)
   const [logs, setLogs] = useState([])
@@ -214,6 +90,7 @@ export default function Game({ code }) {
   const [auth, setAuth] = useState('checking') // checking | need | ok
   const [invite0, setInvite0] = useState(null)
   const [mute, setMute] = useState(false)
+  const [shotInfo, setShotInfo] = useState(null) // live power readout under the desk while aiming
   const deskRef = useRef('bench')
 
   useEffect(() => {
@@ -227,7 +104,7 @@ export default function Game({ code }) {
   const pickDesk = (d) => { deskRef.current = d; setDesk(d); try { localStorage.setItem('kolom_desk', d) } catch {} }
   const toggleMute = () => { setMuted(!mute); setMute(!mute) }
 
-  const pushLog = useCallback((m) => setLogs((l) => [...l.slice(-7), m]), [])
+  const pushLog = useCallback((m) => setLogs((l) => [...l.slice(-8), { id: Date.now() + Math.random(), text: m }]), [])
 
   // ---- connection
   useEffect(() => {
@@ -270,6 +147,10 @@ export default function Game({ code }) {
           }
           for (const [id, b] of bodies.current) if (!seen.has(id)) { ghosts.current.push({ ...b, born: performance.now() }); bodies.current.delete(id); sfx.fall() }
           if (m.h > 25) sfx.hit(Math.min(1, m.h / 900))
+        } else if (m.t === 'respawn') {
+          // The kolom is put back by the next state; this only says "flash it when it lands".
+          for (const id of m.ids) spawns.current.set(id, performance.now() + 120)
+          sfx.respawn()
         } else if (m.t === 'log') pushLog(m.msg)
         else if (m.t === 'error') pushLog(m.msg)
         else if (m.t === 'closed') { setConn('gone'); dead = true; s.close() }
@@ -320,36 +201,25 @@ export default function Game({ code }) {
         da = Math.atan2(Math.sin(da), Math.cos(da)) // shortest way round
         b.ang += da * 0.55
       }
-      for (const b of bodies.current.values()) drawBody(ctx, b, t, s?.phase === 'playing' && !s.simulating && b.id === s.turn, s?.players[b.id]?.name, b.id)
+      const live = s?.phase === 'playing' && !s.simulating
+      for (const b of bodies.current.values()) {
+        const born = spawns.current.get(b.id)
+        const spawn = born ? Math.max(0, 1 - (t - born) / 650) : 0
+        if (born && spawn <= 0) spawns.current.delete(b.id)
+        drawBody(ctx, b, t, { active: live && b.id === s.turn, name: s?.players[b.id]?.name, seat: b.id, spawn })
+      }
       ghosts.current = ghosts.current.filter((g) => t - g.born < 600)
       for (const g of ghosts.current) {
         const p = (t - g.born) / 600
-        drawBody(ctx, { ...g, scale: 1 - p * 0.7, alpha: 1 - p }, t, false, null, g.id)
+        drawBody(ctx, { ...g, scale: 1 - p * 0.7, alpha: 1 - p }, t, { seat: g.id })
       }
-      const a = aim.current
-      const pen = a && bodies.current.get(mySeat)
-      if (a && pen) {
-        const c = Math.cos(pen.ang), sn = Math.sin(pen.ang)
-        const gx = pen.x + a.lx * c - a.ly * sn // where the finger lands on the kolom
-        const gy = pen.y + a.lx * sn + a.ly * c
-        const vx = a.sx - a.x, vy = a.sy - a.y
-        const len = Math.hypot(vx, vy)
-        const power = Math.min(len / 220, 1)
-        ctx.fillStyle = '#ff9f1c'
-        ctx.strokeStyle = '#fff'
-        ctx.lineWidth = 3
-        ctx.beginPath(); ctx.arc(gx, gy, 9, 0, 7); ctx.fill(); ctx.stroke()
-        if (len > 4) {
-          const ux = vx / len, uy = vy / len
-          ctx.strokeStyle = 'rgba(40,20,5,.4)'; ctx.lineWidth = 3; ctx.setLineDash([])
-          ctx.beginPath(); ctx.moveTo(a.sx, a.sy); ctx.lineTo(a.x, a.y); ctx.stroke() // the pull
-          ctx.fillStyle = 'rgba(40,20,5,.5)'
-          ctx.beginPath(); ctx.arc(a.sx, a.sy, 6, 0, 7); ctx.fill()
-          ctx.strokeStyle = power > 0.8 ? '#ff4d3d' : power > 0.45 ? '#ffb020' : '#35c26b'
-          ctx.lineWidth = 6; ctx.setLineDash([14, 10])
-          ctx.beginPath(); ctx.moveTo(gx, gy); ctx.lineTo(gx + ux * (90 + power * 330), gy + uy * (90 + power * 330)); ctx.stroke()
-          ctx.setLineDash([])
-        }
+      const pen = bodies.current.get(mySeat)
+      if (aim.current && pen) {
+        const p = drawAim(ctx, pen, aim.current, s?.shot, t)
+        const now = Math.round(p.power * 100)
+        if (now !== lastTick.current) { lastTick.current = now; setShotInfo({ power: now, danger: p.ready && (p.stop.x < 0 || p.stop.x > SIZE || p.stop.y < 0 || p.stop.y > SIZE), spin: Math.abs(p.turn || 0) > 0.35 }) }
+      } else if (live && pen && s.turn === mySeat) {
+        drawTurnHint(ctx, pen, t)
       }
       raf = requestAnimationFrame(loop)
     }
@@ -357,13 +227,12 @@ export default function Game({ code }) {
     return () => cancelAnimationFrame(raf)
   }, [mySeat])
 
-  // ---- aiming (pull back from your kolom, let go to flick)
+  // ---- aiming: press anywhere on the desk and pull back; the kolom goes the way you pulled from. The finger lands on
+  // the point of the kolom nearest to where you pressed, so pressing near an end spins it.
   const pt = (e) => {
     const r = canvas.current.getBoundingClientRect()
     return { x: ((e.clientX - r.left) / r.width) * SIZE, y: ((e.clientY - r.top) / r.height) * SIZE }
   }
-  // Press anywhere on the desk and pull back; the kolom goes the way you pulled from. The finger lands on the point of
-  // the kolom nearest to where you pressed, so pressing near an end spins it and pressing in line with the middle slides it.
   const down = (e) => {
     if (!myTurn) return
     const p = pt(e)
@@ -377,9 +246,10 @@ export default function Game({ code }) {
     aim.current = { sx: p.x, sy: p.y, x: p.x, y: p.y, lx, ly }
   }
   const move = (e) => { if (aim.current) { const p = pt(e); aim.current = { ...aim.current, x: p.x, y: p.y } } }
-  const up = () => {
+  const release = () => {
     const a = aim.current
     aim.current = null
+    setShotInfo(null)
     const pen = bodies.current.get(mySeat)
     if (!a || !pen || !myTurn) return
     const vx = a.sx - a.x, vy = a.sy - a.y
@@ -388,82 +258,105 @@ export default function Game({ code }) {
     send({ t: 'shoot', dx: vx, dy: vy, power: Math.min(len / 220, 1), lx: a.lx, ly: a.ly })
   }
 
+  // A countdown tick in the last seconds of your own turn.
+  const left = state && state.left_ms ? Math.max(0, Math.ceil((state.left_ms - (performance.now() - recvAt.current)) / 1000)) : null
+  useEffect(() => {
+    if (!myTurn || left == null || left > 5 || left < 1) return
+    sfx.tick()
+  }, [myTurn, left])
+
   const invite = typeof window !== 'undefined' ? `${window.location.origin}/room/?code=${code}` : ''
   if (auth === 'checking') return <div className="wrap muted">লোড হচ্ছে...</div>
   if (auth === 'need') return <GuestJoin code={code} info={invite0} onDone={() => setAuth('checking')} />
-
   if (conn === 'gone') return <div className="wrap"><div className="card"><h2>এই রুম বন্ধ হয়ে গেছে</h2><p className="muted">লবি থেকে নতুন খেলা শুরু করুন।</p><a className="btn" href="/">লবিতে ফিরুন</a></div></div>
 
-  const left = state && state.left_ms ? Math.max(0, Math.ceil((state.left_ms - (performance.now() - recvAt.current)) / 1000)) : null
   const isHost = !!state && !!me && state.host === me.id
   const turnName = state?.players[state.turn]?.name
+  const level = LEVELS.find((l) => l.key === state?.difficulty)
+  const lobby = state?.phase === 'lobby'
+  const seats = state?.players || []
+  const enriched = state ? { ...state, turnSecs: TURN_SECS[state.difficulty] || 25 } : null
+
+  // The one line under the desk that says what to do right now.
+  let prompt = { text: 'সংযোগ হচ্ছে...', tone: '' }
+  if (state) {
+    if (lobby) prompt = { text: seats.length < 2 ? 'আরও একজন দরকার। ইনভাইট লিংক পাঠান।' : isHost ? 'সবাই এসে গেছে, খেলা শুরু করুন।' : 'হোস্টের শুরুর অপেক্ষায়...', tone: '' }
+    else if (state.phase === 'over') prompt = { text: 'খেলা শেষ', tone: '' }
+    else if (state.simulating) prompt = { text: 'কলম ছুটছে...', tone: 'go' }
+    else if (myTurn) {
+      prompt = shotInfo
+        ? { text: shotInfo.danger ? `${shotInfo.power}% — এই শটে নিজের কলমই পড়ে যাবে!` : `${shotInfo.power}% শক্তি${shotInfo.spin ? ' · কলম ঘুরবে' : ''} — ছেড়ে দিন`, tone: shotInfo.danger ? 'bad' : 'go' }
+        : { text: `আপনার পালা: বেঞ্চে চেপে পেছনে টেনে ছেড়ে দিন${left !== null ? ` · ${left} সে.` : ''}`, tone: 'you' }
+    } else prompt = { text: `${turnName}-এর পালা${left !== null ? ` · ${left} সে.` : ''}`, tone: '' }
+  }
 
   return (
     <div className="wrap">
-      <div className="row" style={{ justifyContent: 'space-between', marginBottom: 10 }}>
+      <div className="roombar">
         <a href="/" className="btn ghost small">&larr; লবি</a>
-        <span className="muted">রুম <b style={{ color: 'var(--gold)', letterSpacing: 2 }}>{code}</b> {conn !== 'live' && <span className="pill">আবার সংযোগ হচ্ছে...</span>}</span>
+        <span className="roombar__code">রুম <b>{code}</b></span>
+        {level && <span className={`pill pill--level pill--${level.key}`}>{level.icon} {level.name}</span>}
+        {conn !== 'live' && <span className="pill pill--warn">আবার সংযোগ হচ্ছে...</span>}
       </div>
+
       <div className="game">
-        <div>
-          <canvas ref={canvas} className="board" onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={() => { aim.current = null }} aria-label="খেলার বেঞ্চ" />
-          <p className="muted" style={{ textAlign: 'center', margin: '8px 0 0' }}>
-            {!state ? 'সংযোগ হচ্ছে...' : state.phase === 'lobby' ? 'খেলোয়াড়দের জন্য অপেক্ষা। ইনভাইট লিংক পাঠান।' : state.phase === 'over' ? 'খেলা শেষ' : state.simulating ? 'কলম ছুটছে...' : myTurn ? `আপনার পালা: বেঞ্চের যেকোনো জায়গায় চেপে পেছনে টেনে ছেড়ে দিন${left !== null ? ` (${left} সে.)` : ''}` : `${turnName}-এর পালা${left !== null ? ` (${left} সে.)` : ''}`}
-          </p>
+        <div className="boardwrap">
+          <canvas
+            ref={canvas}
+            className={`board ${myTurn ? 'board--mine' : ''}`}
+            onPointerDown={down}
+            onPointerMove={move}
+            onPointerUp={release}
+            onPointerCancel={() => { aim.current = null; setShotInfo(null) }}
+            aria-label="খেলার বেঞ্চ"
+          />
+          <p className={`prompt prompt--${prompt.tone}`}>{prompt.text}</p>
         </div>
-        <div className="card">
-          <h3>খেলোয়াড়</h3>
-          {(state?.players || []).map((p) => (
-            <div key={p.id} className={`player ${state.phase === 'playing' && state.turn === p.seat && p.alive ? 'turn' : ''} ${!p.alive ? 'out' : ''}`}>
-              <Avatar id={p.id} name={p.name} at={p.avatar} size={32} ring={COLORS[p.seat]} />
-              <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.name}{me && p.id === me.id ? ' (আপনি)' : ''}{state.host === p.id ? ' *' : ''}</span>
-              {!p.online && <span className="pill">নেই</span>}
-              {!p.alive && <span className="pill">পড়েছে</span>}
-              <span className="muted" style={{ fontSize: 12 }}>{PEN_NAMES[p.pen] || p.pen}</span>
+
+        <div className="side">
+          <div className="card">
+            <div className="row between" style={{ marginBottom: 8 }}>
+              <h3 style={{ margin: 0 }}>খেলোয়াড়</h3>
+              {!lobby && state?.phase !== 'over' && <span className="muted" style={{ fontSize: 12 }}>⚡ ফেলা · ❤ প্রাণ</span>}
             </div>
-          ))}
-          {state?.phase === 'lobby' && (
-            <div style={{ marginTop: 12 }}>
-              <h3 style={{ margin: '0 0 8px' }}>বন্ধুদের ডাকুন</h3>
-              <ShareBar url={invite} host={me?.name} />
-              <div style={{ height: 10 }} />
-              {isHost ? <button onClick={() => send({ t: 'start' })} disabled={state.players.length < 2} style={{ width: '100%' }}>{state.players.length < 2 ? 'দুজন লাগবে' : 'খেলা শুরু করুন'}</button> : <p className="muted">হোস্ট খেলা শুরু করবেন।</p>}
-            </div>
-          )}
-          <h3 style={{ marginTop: 16 }}>বেঞ্চ</h3>
-          <div className="row" style={{ gap: 8 }}>
-            <div className="swatches">
-              {Object.entries(DESKS).map(([k, d]) => <button key={k} type="button" className={`swatch ${desk === k ? 'on' : ''}`} style={{ background: d.swatch }} title={d.label} aria-label={d.label} onClick={() => pickDesk(k)} />)}
-            </div>
-            <button type="button" className="ghost small" onClick={toggleMute} style={{ marginLeft: 'auto' }}>{mute ? 'শব্দ বন্ধ' : 'শব্দ চালু'}</button>
+            {seats.map((p) => <PlayerCard key={p.id} p={p} state={enriched} isMe={!!me && p.id === me.id} left={state.turn === p.seat ? left : null} />)}
+            {lobby && Array.from({ length: Math.max(0, 2 - seats.length) }, (_, i) => (
+              <div key={`empty${i}`} className="player player--empty"><span className="player__slot" aria-hidden="true">+</span><span className="muted">খালি চেয়ার</span></div>
+            ))}
+
+            {lobby && (
+              <div className="lobbybox">
+                <h3>মাত্রা বেছে নিন</h3>
+                <DifficultyPicker value={state.difficulty} canEdit={isHost} onPick={(level) => send({ t: 'difficulty', level })} />
+                <p className="muted levelblurb">{level?.blurb}{!isHost && ' হোস্ট বেছে নেবেন।'}</p>
+                <h3 style={{ marginTop: 14 }}>বন্ধুদের ডাকুন</h3>
+                <ShareBar url={invite} host={me?.name} />
+                <div style={{ marginTop: 10 }}>
+                  {isHost
+                    ? <button onClick={() => { sfx.pick(); send({ t: 'start' }) }} disabled={seats.length < 2} className="bigcta">{seats.length < 2 ? 'দুজন লাগবে' : `খেলা শুরু করুন · ${level?.coins} কয়েন`}</button>
+                    : <p className="muted">হোস্ট খেলা শুরু করবেন।</p>}
+                </div>
+              </div>
+            )}
           </div>
-          <h3 style={{ marginTop: 16 }}>ঘটনা</h3>
-          <div className="log">{logs.length ? logs.map((l, i) => <div key={i}>{l}</div>) : 'এখনো কিছু হয়নি।'}</div>
+
+          <div className="card">
+            <h3>বেঞ্চ</h3>
+            <div className="row" style={{ gap: 8 }}>
+              <div className="swatches">
+                {Object.entries(DESKS).map(([k, d]) => <button key={k} type="button" className={`swatch ${desk === k ? 'on' : ''}`} style={{ background: d.swatch }} title={d.label} aria-label={d.label} onClick={() => pickDesk(k)} />)}
+              </div>
+              <button type="button" className="ghost small" onClick={toggleMute} style={{ marginLeft: 'auto' }}>{mute ? '🔇 শব্দ বন্ধ' : '🔊 শব্দ চালু'}</button>
+            </div>
+            <h3 style={{ marginTop: 14 }}>ঘটনা</h3>
+            <div className="log">
+              {logs.length ? logs.map((l) => <div key={l.id} className="logline">{l.text}</div>) : <span className="muted">এখনো কিছু হয়নি।</span>}
+            </div>
+          </div>
         </div>
       </div>
 
-      {state?.phase === 'over' && (
-        <div className="overlay">
-          <div className="card">
-            <h2>খেলা শেষ</h2>
-            {state.results.map((r) => (
-              <div key={r.id} className="player">
-                <b style={{ width: 22 }}>{r.rank}</b>
-                <Avatar id={r.id} name={r.name} size={32} />
-                <span style={{ flex: 1 }}>{r.name}{me && r.id === me.id ? ' (আপনি)' : ''}</span>
-                {r.looser && <span className="pill" style={{ background: 'var(--red)', color: '#fff' }}>লুজার</span>}
-                {r.rank === 1 && <span className="pill" style={{ background: 'var(--gold)', color: '#2a1a05' }}>বিজয়ী</span>}
-                {r.reward > 0 && <b style={{ color: 'var(--gold)' }}>+{r.reward} কয়েন</b>}
-              </div>
-            ))}
-            <div className="row" style={{ marginTop: 14 }}>
-              {isHost && <button onClick={() => send({ t: 'rematch' })}>আবার খেলুন</button>}
-              <a className="btn ghost" style={{ background: 'transparent', color: 'var(--text)', border: '1px solid var(--line)' }} href="/">লবি</a>
-            </div>
-            {!isHost && <p className="muted">হোস্ট আবার খেলা শুরু করতে পারেন।</p>}
-          </div>
-        </div>
-      )}
+      {state?.phase === 'over' && <EndOverlay state={state} me={me} isHost={isHost} onRematch={() => send({ t: 'rematch' })} />}
     </div>
   )
 }
