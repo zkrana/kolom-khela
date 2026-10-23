@@ -206,7 +206,9 @@ export default function Game({ code }) {
         const born = spawns.current.get(b.id)
         const spawn = born ? Math.max(0, 1 - (t - born) / 650) : 0
         if (born && spawn <= 0) spawns.current.delete(b.id)
-        drawBody(ctx, b, t, { active: live && b.id === s.turn, name: s?.players[b.id]?.name, seat: b.id, spawn })
+        // While you aim, your own name tag would sit under the power reading, so it steps aside.
+        const hideName = !!aim.current && b.id === mySeat
+        drawBody(ctx, b, t, { active: live && b.id === s.turn, name: hideName ? null : s?.players[b.id]?.name, seat: b.id, spawn })
       }
       ghosts.current = ghosts.current.filter((g) => t - g.born < 600)
       for (const g of ghosts.current) {

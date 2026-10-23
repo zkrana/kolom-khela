@@ -6,10 +6,11 @@ export const COLORS = ['#2f6df6', '#e53935', '#1faa59', '#8e44ad'] // one per se
 
 // Desk looks. Each is painted once into an offscreen canvas and then just copied every frame.
 export const DESKS = {
-  bench: { label: 'স্কুলের বেঞ্চ', swatch: 'linear-gradient(135deg,#e0a867,#b4773c)' },
-  felt: { label: 'সবুজ কাপড়', swatch: 'linear-gradient(135deg,#2aa371,#146b47)' },
-  ocean: { label: 'সাগর', swatch: 'linear-gradient(135deg,#3b9be0,#1c4f93)' },
-  classic: { label: 'সাদামাটা', swatch: 'linear-gradient(135deg,#efebe0,#d8d2c2)' },
+  bench: { label: 'স্কুলের বেঞ্চ', swatch: 'linear-gradient(135deg,#a9743f,#5e3a1c)' },
+  slate: { label: 'স্লেট', swatch: 'linear-gradient(135deg,#3d4454,#1b1f2a)' },
+  felt: { label: 'সবুজ কাপড়', swatch: 'linear-gradient(135deg,#1f8a5f,#0a4a30)' },
+  ocean: { label: 'সাগর', swatch: 'linear-gradient(135deg,#2f7fc4,#10335f)' },
+  classic: { label: 'খাতার পাতা', swatch: 'linear-gradient(135deg,#f3eee2,#ddd5c2)' },
 }
 const deskCache = new Map()
 
@@ -24,52 +25,96 @@ function paintDesk(key) {
   const c = cv.getContext('2d')
   const r = rng(7)
   if (key === 'bench') {
-    // planks of warm honey wood with grain
-    for (let y = 0; y < SIZE; y += 100) {
-      const l = 0.5 + r() * 0.12
-      c.fillStyle = `hsl(${28 + r() * 6},${52 + r() * 8}%,${44 + l * 14}%)`
-      c.fillRect(0, y, SIZE, 100)
-      for (let k = 0; k < 14; k++) {
-        c.strokeStyle = `rgba(90,50,15,${0.05 + r() * 0.09})`
-        c.lineWidth = 1 + r() * 2
-        const gy = y + 6 + r() * 88
-        c.beginPath(); c.moveTo(0, gy)
-        c.bezierCurveTo(SIZE * 0.3, gy + (r() - 0.5) * 14, SIZE * 0.65, gy + (r() - 0.5) * 14, SIZE, gy + (r() - 0.5) * 8)
+    // Varnished school wood. The planks run along the bench, away from the player, so their seams
+    // never line up with a kolom lying across the desk, and the grain stays fine enough to read as
+    // wood rather than as stripes.
+    const base = c.createLinearGradient(0, 0, SIZE, SIZE)
+    base.addColorStop(0, '#5b3b1f'); base.addColorStop(0.5, '#482d16'); base.addColorStop(1, '#351f0e')
+    c.fillStyle = base; c.fillRect(0, 0, SIZE, SIZE)
+    for (let x = -24; x < SIZE; x += 196) {
+      c.fillStyle = `hsla(${23 + r() * 6},${38 + r() * 8}%,${21 + r() * 4}%,.8)`
+      c.fillRect(x, 0, 196, SIZE)
+      for (let k = 0; k < 46; k++) {
+        const light = r() > 0.5
+        c.strokeStyle = light ? `rgba(224,172,112,${0.03 + r() * 0.05})` : `rgba(24,12,3,${0.04 + r() * 0.08})`
+        c.lineWidth = 0.6 + r() * 2
+        const gx = x + 4 + r() * 188
+        c.beginPath(); c.moveTo(gx, -10)
+        c.bezierCurveTo(gx + (r() - 0.5) * 16, SIZE * 0.3, gx + (r() - 0.5) * 16, SIZE * 0.6, gx + (r() - 0.5) * 10, SIZE + 10)
         c.stroke()
       }
-      c.fillStyle = 'rgba(60,30,8,.45)'
-      c.fillRect(0, y, SIZE, 2.5)
-      c.fillStyle = 'rgba(255,230,190,.18)'
-      c.fillRect(0, y + 2.5, SIZE, 1.5)
-      c.fillStyle = 'rgba(60,30,8,.35)' // plank joins
-      c.fillRect(150 + r() * 500, y, 2.5, 100)
+      c.fillStyle = 'rgba(14,7,2,.45)'; c.fillRect(x, 0, 3, SIZE)         // the shadow in the join
+      c.fillStyle = 'rgba(255,206,150,.08)'; c.fillRect(x + 3, 0, 1.5, SIZE) // and the light on the edge beside it
+    }
+    // A broad sheen across the varnish, so the desk reads as a polished surface and not a flat fill.
+    const sheen = c.createLinearGradient(0, SIZE * 0.1, SIZE, SIZE * 0.9)
+    sheen.addColorStop(0, 'rgba(255,226,180,0)')
+    sheen.addColorStop(0.42, 'rgba(255,226,180,.11)')
+    sheen.addColorStop(0.6, 'rgba(255,226,180,.04)')
+    sheen.addColorStop(1, 'rgba(255,226,180,0)')
+    c.fillStyle = sheen; c.fillRect(0, 0, SIZE, SIZE)
+  } else if (key === 'slate') {
+    // Cool dark stone: every pen colour reads at a glance on it.
+    const g = c.createLinearGradient(0, 0, SIZE, SIZE)
+    g.addColorStop(0, '#39414f'); g.addColorStop(0.55, '#262c38'); g.addColorStop(1, '#171c25')
+    c.fillStyle = g; c.fillRect(0, 0, SIZE, SIZE)
+    for (let i = 0; i < 2600; i++) {
+      c.fillStyle = r() > 0.5 ? 'rgba(255,255,255,.035)' : 'rgba(0,0,0,.07)'
+      const s = 1 + r() * 2.5
+      c.fillRect(r() * SIZE, r() * SIZE, s, s)
+    }
+    c.strokeStyle = 'rgba(255,255,255,.05)'; c.lineWidth = 2
+    for (let i = 0; i < 26; i++) { // faint veins
+      const x = r() * SIZE, y = r() * SIZE
+      c.beginPath(); c.moveTo(x, y)
+      c.bezierCurveTo(x + (r() - 0.5) * 300, y + (r() - 0.5) * 200, x + (r() - 0.5) * 300, y + (r() - 0.5) * 300, x + (r() - 0.5) * 420, y + (r() - 0.5) * 420)
+      c.stroke()
     }
   } else if (key === 'felt') {
-    const g = c.createRadialGradient(SIZE / 2, SIZE / 2, 80, SIZE / 2, SIZE / 2, SIZE * 0.75)
-    g.addColorStop(0, '#2ba873'); g.addColorStop(1, '#10603f')
+    const g = c.createRadialGradient(SIZE / 2, SIZE * 0.42, 60, SIZE / 2, SIZE / 2, SIZE * 0.8)
+    g.addColorStop(0, '#1f9a67'); g.addColorStop(0.6, '#13724a'); g.addColorStop(1, '#07402a')
     c.fillStyle = g; c.fillRect(0, 0, SIZE, SIZE)
-    for (let i = 0; i < 9000; i++) { c.fillStyle = r() > 0.5 ? 'rgba(255,255,255,.05)' : 'rgba(0,0,0,.07)'; c.fillRect(r() * SIZE, r() * SIZE, 2, 2) }
-    c.strokeStyle = 'rgba(255,255,255,.22)'; c.lineWidth = 3
-    c.beginPath(); c.arc(SIZE / 2, SIZE / 2, 120, 0, 7); c.stroke()
+    for (let i = 0; i < 14000; i++) { // the nap of the cloth
+      c.fillStyle = r() > 0.5 ? 'rgba(255,255,255,.035)' : 'rgba(0,0,0,.06)'
+      c.fillRect(r() * SIZE, r() * SIZE, 2, 2)
+    }
+    c.strokeStyle = 'rgba(255,255,255,.14)'; c.lineWidth = 3
+    c.beginPath(); c.arc(SIZE / 2, SIZE / 2, 130, 0, 7); c.stroke()
+    c.strokeStyle = 'rgba(255,255,255,.07)'; c.lineWidth = 2
+    c.beginPath(); c.arc(SIZE / 2, SIZE / 2, 150, 0, 7); c.stroke()
   } else if (key === 'ocean') {
-    const g = c.createLinearGradient(0, 0, SIZE, SIZE)
-    g.addColorStop(0, '#46a6ea'); g.addColorStop(1, '#1b4a8f')
+    const g = c.createLinearGradient(0, 0, SIZE * 0.5, SIZE)
+    g.addColorStop(0, '#3a94d8'); g.addColorStop(0.5, '#1f5fa0'); g.addColorStop(1, '#0d2c52')
     c.fillStyle = g; c.fillRect(0, 0, SIZE, SIZE)
-    c.strokeStyle = 'rgba(255,255,255,.07)'; c.lineWidth = 14
-    for (let d = -SIZE; d < SIZE * 2; d += 60) { c.beginPath(); c.moveTo(d, 0); c.lineTo(d - SIZE, SIZE); c.stroke() }
+    c.lineWidth = 3 // light on the water
+    for (let i = 0; i < 70; i++) {
+      c.strokeStyle = `rgba(214,240,255,${0.03 + r() * 0.07})`
+      const y = r() * SIZE
+      c.beginPath(); c.moveTo(-20, y)
+      for (let x = -20; x < SIZE + 20; x += 40) c.quadraticCurveTo(x + 20, y + (r() - 0.5) * 16, x + 40, y)
+      c.stroke()
+    }
   } else {
-    c.fillStyle = '#e8e4da'; c.fillRect(0, 0, SIZE, SIZE)
-    c.fillStyle = 'rgba(120,110,95,.18)'
-    for (let y = 14; y < SIZE; y += 22) for (let x = ((y / 22) % 2) * 11 + 6; x < SIZE; x += 22) c.fillRect(x, y, 2, 2)
+    // A page out of an exercise book.
+    c.fillStyle = '#f5f0e3'; c.fillRect(0, 0, SIZE, SIZE)
+    for (let i = 0; i < 5000; i++) { c.fillStyle = 'rgba(150,135,105,.05)'; c.fillRect(r() * SIZE, r() * SIZE, 2, 2) }
+    c.strokeStyle = 'rgba(90,130,170,.3)'; c.lineWidth = 1.5
+    for (let y = 60; y < SIZE; y += 54) { c.beginPath(); c.moveTo(0, y); c.lineTo(SIZE, y); c.stroke() }
+    c.strokeStyle = 'rgba(210,110,110,.42)'; c.lineWidth = 2
+    c.beginPath(); c.moveTo(96, 0); c.lineTo(96, SIZE); c.stroke() // the margin line
   }
-  // soft light in the middle, darker towards the corners
-  const v = c.createRadialGradient(SIZE / 2, SIZE / 2, SIZE * 0.25, SIZE / 2, SIZE / 2, SIZE * 0.78)
-  v.addColorStop(0, 'rgba(255,255,255,.10)'); v.addColorStop(1, 'rgba(0,0,0,.28)')
+  // Light in the middle, shade at the corners: the desk looks lit from above rather than printed.
+  const v = c.createRadialGradient(SIZE / 2, SIZE * 0.44, SIZE * 0.2, SIZE / 2, SIZE / 2, SIZE * 0.8)
+  v.addColorStop(0, 'rgba(255,248,230,.13)')
+  v.addColorStop(0.55, 'rgba(0,0,0,.05)')
+  v.addColorStop(1, 'rgba(0,0,0,.42)')
   c.fillStyle = v; c.fillRect(0, 0, SIZE, SIZE)
-  // the drop-off at every edge
-  for (const [x, y, w, h, gx, gy, gw, gh] of [[0, 0, SIZE, 26, 0, 0, 0, 26], [0, SIZE - 26, SIZE, 26, 0, SIZE, 0, -26], [0, 0, 26, SIZE, 0, 0, 26, 0], [SIZE - 26, 0, 26, SIZE, SIZE, 0, -26, 0]]) {
+  // The drop-off at every edge, so it reads as a surface a kolom can roll off.
+  for (const [x, y, w, h, gx, gy, gw, gh] of [[0, 0, SIZE, 34, 0, 0, 0, 34], [0, SIZE - 34, SIZE, 34, 0, SIZE, 0, -34], [0, 0, 34, SIZE, 0, 0, 34, 0], [SIZE - 34, 0, 34, SIZE, SIZE, 0, -34, 0]]) {
     const lg = c.createLinearGradient(gx, gy, gx + gw, gy + gh)
-    lg.addColorStop(0, 'rgba(25,14,5,.6)'); lg.addColorStop(1, 'rgba(25,14,5,0)')
+    lg.addColorStop(0, 'rgba(12,6,2,.62)')
+    lg.addColorStop(0.5, 'rgba(12,6,2,.16)')
+    lg.addColorStop(1, 'rgba(12,6,2,0)')
     c.fillStyle = lg; c.fillRect(x, y, w, h)
   }
   return cv
@@ -101,8 +146,18 @@ export function drawBody(ctx, b, t, { active = false, name = null, seat = 0, spa
   ctx.rotate(b.ang || 0)
   ctx.save()
   ctx.translate(4, 7)
-  ctx.fillStyle = 'rgba(0,0,0,.22)'
+  ctx.fillStyle = 'rgba(0,0,0,.3)'
   capsule(ctx, b.hl, b.r)
+  ctx.fill()
+  ctx.restore()
+  // The owner's colour as a halo under the pen: two players holding the same model are still told apart.
+  ctx.save()
+  ctx.shadowColor = COLORS[seat % 4]
+  ctx.shadowBlur = 22
+  ctx.globalAlpha = (b.alpha ?? 1) * 0.9
+  ctx.fillStyle = COLORS[seat % 4]
+  capsule(ctx, b.hl, b.r * 0.9)
+  ctx.fill()
   ctx.fill()
   ctx.restore()
   if (active) {
@@ -181,13 +236,29 @@ export function predict(pen, aim, shot) {
   }
 }
 
+/** Where a straight path from (x, y) along (ux, uy) leaves the desk, and by which edge. */
+function edgeCrossing(x, y, ux, uy) {
+  let best = { side: 'bottom', x, y, d: Infinity }
+  const put = (side, d) => {
+    if (d > 0 && d < best.d) best = { side, d, x: x + ux * d, y: y + uy * d }
+  }
+  if (ux > 0.0001) put('right', (SIZE - x) / ux)
+  if (ux < -0.0001) put('left', -x / ux)
+  if (uy > 0.0001) put('bottom', (SIZE - y) / uy)
+  if (uy < -0.0001) put('top', -y / uy)
+  return best
+}
+
 const POWER_COLOR = (p) => (p > 0.8 ? '#ff4d3d' : p > 0.45 ? '#ffb020' : '#35c26b')
 
 /** The aim shown while a finger is down: rubber band, power ring, predicted path and where it stops. */
 export function drawAim(ctx, pen, aim, shot, t) {
   const p = predict(pen, aim, shot)
   const danger = p.ready && (p.stop.x < 0 || p.stop.x > SIZE || p.stop.y < 0 || p.stop.y > SIZE)
+  // Two different questions, so two different colours: the ring says how hard, the path says where it ends.
+  // A hard but safe shot would otherwise be the same red as one that walks your own kolom off the desk.
   const col = danger ? '#ff4d3d' : POWER_COLOR(p.power)
+  const path = danger ? '#ff4d3d' : '#6ee7a8'
 
   if (p.ready) {
     // Dots at equal slices of time: they bunch up towards the end, which is the kolom slowing down.
@@ -197,7 +268,7 @@ export function drawAim(ctx, pen, aim, shot, t) {
       const x = pen.x + p.ux * p.travel * f
       const y = pen.y + p.uy * p.travel * f
       ctx.globalAlpha = 0.65 * (1 - i / 16)
-      ctx.fillStyle = col
+      ctx.fillStyle = path
       ctx.beginPath(); ctx.arc(x, y, 7 - i * 0.3, 0, 7); ctx.fill()
     }
     ctx.restore()
@@ -209,18 +280,39 @@ export function drawAim(ctx, pen, aim, shot, t) {
     ctx.globalAlpha = 0.5
     ctx.setLineDash([10, 7])
     ctx.lineWidth = 3
-    ctx.strokeStyle = col
+    ctx.strokeStyle = path
     capsule(ctx, pen.hl, pen.r)
     ctx.stroke()
     ctx.setLineDash([])
     ctx.restore()
 
     if (danger) {
+      // Light up the edge it would leave by, and mark the spot where it goes over.
+      const exit = edgeCrossing(pen.x, pen.y, p.ux, p.uy)
       ctx.save()
-      ctx.globalAlpha = 0.55 + 0.35 * Math.sin(t / 110)
-      ctx.strokeStyle = '#ff4d3d'
-      ctx.lineWidth = 9
-      ctx.strokeRect(5, 5, SIZE - 10, SIZE - 10) // the desk edge lights up: this shot goes off
+      ctx.globalAlpha = 0.5 + 0.3 * Math.sin(t / 110)
+      const band = 70
+      const [bx, by, bw, bh, g0, g1] = {
+        bottom: [0, SIZE - band, SIZE, band, [0, SIZE], [0, SIZE - band]],
+        top: [0, 0, SIZE, band, [0, 0], [0, band]],
+        left: [0, 0, band, SIZE, [0, 0], [band, 0]],
+        right: [SIZE - band, 0, band, SIZE, [SIZE, 0], [SIZE - band, 0]],
+      }[exit.side]
+      const lg = ctx.createLinearGradient(g0[0], g0[1], g1[0], g1[1])
+      lg.addColorStop(0, 'rgba(255,60,45,.85)')
+      lg.addColorStop(1, 'rgba(255,60,45,0)')
+      ctx.fillStyle = lg
+      ctx.fillRect(bx, by, bw, bh)
+      ctx.globalAlpha = 0.95
+      ctx.fillStyle = '#ff4d3d'
+      ctx.strokeStyle = '#fff'
+      ctx.lineWidth = 3
+      ctx.beginPath(); ctx.arc(exit.x, exit.y, 17, 0, 7); ctx.fill(); ctx.stroke()
+      ctx.fillStyle = '#fff'
+      ctx.font = 'bold 22px system-ui'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText('!', exit.x, exit.y + 1)
       ctx.restore()
     }
 
@@ -269,14 +361,15 @@ export function drawAim(ctx, pen, aim, shot, t) {
   ctx.strokeStyle = '#fff'
   ctx.lineWidth = 3
   ctx.stroke()
-  ctx.fillStyle = '#fff'
-  ctx.font = 'bold 15px system-ui'
+  const label = `${Math.round(p.power * 100)}%`
+  ctx.font = 'bold 16px system-ui'
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  ctx.strokeStyle = 'rgba(0,0,0,.55)'
-  ctx.lineWidth = 4
-  ctx.strokeText(`${Math.round(p.power * 100)}%`, 0, -36)
-  ctx.fillText(`${Math.round(p.power * 100)}%`, 0, -36)
+  const lw = ctx.measureText(label).width + 20
+  ctx.fillStyle = 'rgba(16,8,2,.82)'
+  ctx.beginPath(); ctx.roundRect(-lw / 2, -58, lw, 26, 13); ctx.fill()
+  ctx.fillStyle = col
+  ctx.fillText(label, 0, -44)
   ctx.restore()
   return p
 }

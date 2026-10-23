@@ -1,5 +1,7 @@
 use crate::auth::{self, User};
 use crate::db;
+use crate::email;
+use crate::guard;
 use crate::pens;
 use crate::room::{self, Cmd};
 use crate::AppState;
@@ -75,6 +77,11 @@ async fn need_admin(st: &AppState, h: &HeaderMap) -> Result<User, ApiErr> {
 }
 
 async fn session_for(st: &AppState, user_id: i64) -> Result<String, ApiErr> {
+    // Signing in is a good moment to drop sessions that have aged out; nothing else walks this table.
+    let _ = sqlx::query(db::q("DELETE FROM sessions WHERE created_at < ?"))
+        .bind(db::now() - guard::SESSION_MAX_AGE)
+        .execute(&st.pool)
+        .await;
     let token = auth::new_token();
     sqlx::query(db::q("INSERT INTO sessions (token_hash, user_id, created_at) VALUES (?, ?, ?)"))
         .bind(auth::hash_token(&token))
@@ -93,17 +100,22 @@ struct RegisterBody {
     password: String,
 }
 
-async fn register(State(st): St, Json(b): Json<RegisterBody>) -> Res<Value> {
-    let email = b.email.trim().to_lowercase();
+async fn register(State(st): St, headers: HeaderMap, Json(b): Json<RegisterBody>) -> Res<Value> {
     let name = b.name.trim().to_string();
-    if !valid_email(&email) {
-        return err(StatusCode::BAD_REQUEST, "সঠিক ইমেইল দিন");
-    }
+    let email = match email::check(&b.email) {
+        Ok(e) => e,
+        Err(why) => return Err(ApiErr(StatusCode::BAD_REQUEST, why)),
+    };
     if name.chars().count() < 2 || name.chars().count() > 24 {
         return err(StatusCode::BAD_REQUEST, "নাম ২ থেকে ২৪ অক্ষরের হতে হবে");
     }
-    if b.password.len() < 6 || b.password.len() > 100 {
-        return err(StatusCode::BAD_REQUEST, "পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে");
+    if let Err(why) = guard::check_password(&b.password) {
+        return Err(ApiErr(StatusCode::BAD_REQUEST, why));
+    }
+    // One network only so many new accounts an hour. The cap is loose on purpose: a classroom or a
+    // household shares one address, so a tight limit would lock out the very players we want.
+    if !st.limits.allow(&format!("signup:{}", client_ip(&headers)), 30, Duration::from_secs(3600)) {
+        return err(StatusCode::TOO_MANY_REQUESTS, "এখান থেকে অনেক নতুন অ্যাকাউন্ট খোলা হয়েছে। কিছুক্ষণ পর চেষ্টা করুন।");
     }
     let pw = b.password.clone();
     let hash = tokio::task::spawn_blocking(move || auth::hash_password(&pw)).await.unwrap_or_default();
@@ -122,11 +134,6 @@ async fn register(State(st): St, Json(b): Json<RegisterBody>) -> Res<Value> {
     Ok(Json(json!({ "token": token, "user": { "id": id, "name": name, "email": email, "role": "player", "coins": 0, "pen": "econo" } })))
 }
 
-fn valid_email(e: &str) -> bool {
-    let at = e.find('@');
-    e.len() <= 120 && !e.contains(' ') && !e.ends_with("@guest.invalid") && matches!(at, Some(i) if i > 0 && e[i + 1..].contains('.') && !e.ends_with('.'))
-}
-
 #[derive(Deserialize)]
 struct GuestBody {
     email: String,
@@ -140,23 +147,17 @@ fn client_ip(h: &HeaderMap) -> String {
 /// Someone opened an invite link: name and email is all it takes to sit down at the board. The account has no password
 /// (it cannot be logged into from elsewhere) until they choose to save it from the profile page.
 async fn guest_join(State(st): St, headers: HeaderMap, Json(b): Json<GuestBody>) -> Res<Value> {
-    let email = b.email.trim().to_lowercase();
     let name = b.name.trim().to_string();
-    if !valid_email(&email) {
-        return err(StatusCode::BAD_REQUEST, "সঠিক ইমেইল দিন");
-    }
+    let email = match email::check(&b.email) {
+        Ok(e) => e,
+        Err(why) => return Err(ApiErr(StatusCode::BAD_REQUEST, why)),
+    };
     if name.chars().count() < 2 || name.chars().count() > 24 {
         return err(StatusCode::BAD_REQUEST, "নাম ২ থেকে ২৪ অক্ষরের হতে হবে");
     }
-    {
-        // At most 15 new guests per address every 10 minutes.
-        let mut log = st.guest_log.lock().unwrap();
-        let hits = log.entry(client_ip(&headers)).or_default();
-        hits.retain(|t| t.elapsed() < Duration::from_secs(600));
-        if hits.len() >= 15 {
-            return err(StatusCode::TOO_MANY_REQUESTS, "এখান থেকে অনেক বেশি নতুন খেলোয়াড় এসেছে। কয়েক মিনিট পর আবার চেষ্টা করুন।");
-        }
-        hits.push(Instant::now());
+    // Same reasoning as signup, and looser again: an invite link passed around a class is the normal case.
+    if !st.limits.allow(&format!("guest:{}", client_ip(&headers)), 40, Duration::from_secs(600)) {
+        return err(StatusCode::TOO_MANY_REQUESTS, "এখান থেকে অনেক বেশি নতুন খেলোয়াড় এসেছে। কয়েক মিনিট পর আবার চেষ্টা করুন।");
     }
     let taken: Option<i64> = sqlx::query_scalar(db::q("SELECT id FROM users WHERE email = ? AND guest = 0")).bind(&email).fetch_optional(&st.pool).await.ok().flatten();
     if taken.is_some() {
@@ -187,12 +188,12 @@ async fn upgrade_guest(State(st): St, headers: HeaderMap, Json(b): Json<UpgradeB
     if u.guest != 1 {
         return err(StatusCode::BAD_REQUEST, "এই অ্যাকাউন্ট আগেই সেভ করা আছে");
     }
-    let email = b.email.trim().to_lowercase();
-    if !valid_email(&email) {
-        return err(StatusCode::BAD_REQUEST, "সঠিক ইমেইল দিন");
-    }
-    if b.password.len() < 6 || b.password.len() > 100 {
-        return err(StatusCode::BAD_REQUEST, "পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে");
+    let email = match email::check(&b.email) {
+        Ok(e) => e,
+        Err(why) => return Err(ApiErr(StatusCode::BAD_REQUEST, why)),
+    };
+    if let Err(why) = guard::check_password(&b.password) {
+        return Err(ApiErr(StatusCode::BAD_REQUEST, why));
     }
     let pw = b.password.clone();
     let hash = tokio::task::spawn_blocking(move || auth::hash_password(&pw)).await.unwrap_or_default();
@@ -214,35 +215,29 @@ struct LoginBody {
     password: String,
 }
 
-async fn login(State(st): St, Json(b): Json<LoginBody>) -> Res<Value> {
+async fn login(State(st): St, headers: HeaderMap, Json(b): Json<LoginBody>) -> Res<Value> {
     let email = b.email.trim().to_lowercase();
-    {
-        // 8 wrong passwords for one email locks it for 5 minutes.
-        let fails = st.login_fails.lock().unwrap();
-        if let Some((n, at)) = fails.get(&email) {
-            if *n >= 8 && at.elapsed() < Duration::from_secs(300) {
-                return err(StatusCode::TOO_MANY_REQUESTS, "অনেকবার ভুল হয়েছে। কয়েক মিনিট অপেক্ষা করুন।");
-            }
-        }
+    // 8 wrong passwords for one address, or 30 from one network, and sign-in pauses for five minutes.
+    let fail_key = format!("login:{email}");
+    let ip_key = format!("loginip:{}", client_ip(&headers));
+    if !st.limits.allow(&fail_key, 9, Duration::from_secs(300)) || !st.limits.allow(&ip_key, 31, Duration::from_secs(300)) {
+        return err(StatusCode::TOO_MANY_REQUESTS, "অনেকবার ভুল হয়েছে। কয়েক মিনিট অপেক্ষা করুন।");
     }
     let user: Option<User> = sqlx::query_as(db::q(&format!("{} WHERE u.email = ?", auth::USER_SELECT))).bind(&email).fetch_optional(&st.pool).await.ok().flatten();
     let hash = user.as_ref().map(|u| u.pass_hash.clone()).unwrap_or_default();
     let pw = b.password.clone();
     let ok = tokio::task::spawn_blocking(move || auth::verify_password(&pw, &hash)).await.unwrap_or(false);
-    let Some(user) = user.filter(|_| ok) else {
-        let mut fails = st.login_fails.lock().unwrap();
-        let e = fails.entry(email).or_insert((0, Instant::now()));
-        if e.1.elapsed() > Duration::from_secs(300) {
-            *e = (0, Instant::now());
-        }
-        e.0 += 1;
-        e.1 = Instant::now();
+    let Some(user) = user else {
         return err(StatusCode::UNAUTHORIZED, "ইমেইল বা পাসওয়ার্ড ভুল");
     };
+    if !ok {
+        return err(StatusCode::UNAUTHORIZED, "ইমেইল বা পাসওয়ার্ড ভুল");
+    }
     if user.blocked != 0 {
         return err(StatusCode::FORBIDDEN, "এই অ্যাকাউন্ট ব্লক করা আছে");
     }
-    st.login_fails.lock().unwrap().remove(&email);
+    // A good password clears the count, so a player who finally remembers it is not kept waiting.
+    st.limits.clear(&fail_key);
     let token = session_for(&st, user.id).await?;
     Ok(Json(json!({ "token": token, "user": { "id": user.id, "name": user.name, "email": user.email, "role": user.role, "coins": user.coins, "pen": user.pen, "avatarAt": user.avatar_at, "guest": false } })))
 }
@@ -277,6 +272,10 @@ fn new_code() -> String {
 
 async fn create_room(State(st): St, headers: HeaderMap) -> Res<Value> {
     let u = need_user(&st, &headers).await?;
+    // One player cannot fill the server's 200 room slots on their own.
+    if !st.limits.allow(&format!("room:{}", u.id), 12, Duration::from_secs(600)) {
+        return err(StatusCode::TOO_MANY_REQUESTS, "অনেকগুলো রুম খোলা হয়েছে। একটু পরে আবার চেষ্টা করুন।");
+    }
     let mut rooms = st.rooms.lock().await;
     if rooms.len() >= 200 {
         return err(StatusCode::SERVICE_UNAVAILABLE, "সার্ভারে এখন জায়গা নেই। একটু পরে চেষ্টা করুন।");
@@ -344,8 +343,8 @@ struct PwBody {
 
 async fn change_password(State(st): St, headers: HeaderMap, Json(b): Json<PwBody>) -> Res<Value> {
     let u = need_user(&st, &headers).await?;
-    if b.new.len() < 6 || b.new.len() > 100 {
-        return err(StatusCode::BAD_REQUEST, "নতুন পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে");
+    if let Err(why) = guard::check_password(&b.new) {
+        return Err(ApiErr(StatusCode::BAD_REQUEST, why));
     }
     let (cur, hash) = (b.current.clone(), u.pass_hash.clone());
     if !tokio::task::spawn_blocking(move || auth::verify_password(&cur, &hash)).await.unwrap_or(false) {
@@ -372,6 +371,9 @@ fn image_mime(b: &[u8]) -> Option<&'static str> {
 
 async fn set_avatar(State(st): St, headers: HeaderMap, body: Bytes) -> Res<Value> {
     let u = need_user(&st, &headers).await?;
+    if !st.limits.allow(&format!("avatar:{}", u.id), 20, Duration::from_secs(600)) {
+        return err(StatusCode::TOO_MANY_REQUESTS, "অনেকবার ছবি বদলানো হয়েছে। একটু পরে চেষ্টা করুন।");
+    }
     if body.len() > 300_000 {
         return err(StatusCode::PAYLOAD_TOO_LARGE, "ছবি অনেক বড় (সর্বোচ্চ ৩০০ KB)");
     }
@@ -610,6 +612,9 @@ async fn play(socket: WebSocket, user: User, handle: room::RoomHandle) {
             }
         }
     });
+    // A seat sends a handful of messages a minute: a few shots, a level change. Anything past this is a script,
+    // and the socket is dropped rather than letting it spin the room task.
+    let mut sent: Vec<Instant> = Vec::new();
     while let Some(Ok(msg)) = stream.next().await {
         let Message::Text(text) = msg else {
             if matches!(msg, Message::Close(_)) {
@@ -620,6 +625,11 @@ async fn play(socket: WebSocket, user: User, handle: room::RoomHandle) {
         if text.len() > 512 {
             continue;
         }
+        sent.retain(|t| t.elapsed() < Duration::from_secs(10));
+        if sent.len() >= 60 {
+            break;
+        }
+        sent.push(Instant::now());
         let Ok(m) = serde_json::from_str::<ClientMsg>(&text) else { continue };
         let cmd = match m.t.as_str() {
             "start" => Cmd::Start { user_id: user.id },

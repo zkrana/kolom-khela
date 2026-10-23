@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Avatar } from '../../lib/ui'
 import { PEN_NAMES } from '../../lib/pens'
 import { sfx } from '../../lib/sound'
@@ -164,7 +164,7 @@ export function EndOverlay({ state, me, isHost, onRematch }) {
   const results = state.results || []
   const mine = results.find((r) => r.id === me?.id)
   const iWon = mine?.rank === 1
-  const rows = useMemo(() => results.slice().reverse(), [results]) // last place first, winner last
+  const rows = results // winner first, as a results list should read
   const revealMs = 420
   const total = rows.length * revealMs + 500
   const [done, setDone] = useState(false)
@@ -188,7 +188,8 @@ export function EndOverlay({ state, me, isHost, onRematch }) {
             <li
               key={r.id}
               className={`result ${r.rank === 1 ? 'result--win' : ''} ${r.looser ? 'result--loser' : ''} ${me && r.id === me.id ? 'result--me' : ''}`}
-              style={{ animationDelay: `${i * revealMs}ms` }}
+              /* Places appear from the bottom up, so the winner's row is the last to land. */
+              style={{ animationDelay: `${(rows.length - 1 - i) * revealMs}ms` }}
             >
               <span className="result__rank">{r.rank === 1 ? '🥇' : r.rank === 2 ? '🥈' : r.rank === 3 ? '🥉' : r.rank}</span>
               <Avatar id={r.id} name={r.name} at={r.avatar} size={36} />

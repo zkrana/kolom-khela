@@ -1,37 +1,25 @@
 mod api;
 mod auth;
 mod db;
+mod email;
+mod guard;
 mod game;
 mod pens;
 mod room;
 
-use axum::extract::Request;
-use axum::http::{header, HeaderValue};
-use axum::middleware::{from_fn, Next};
-use axum::response::Response;
+use axum::middleware::from_fn;
 use sqlx::AnyPool;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
 
-// Static files may be cached for a few minutes; API answers (who am I, coins, rooms) never may, or the page would show stale data.
-async fn cache_headers(req: Request, next: Next) -> Response {
-    let api = req.uri().path().starts_with("/api/");
-    let mut res = next.run(req).await;
-    if !res.headers().contains_key(header::CACHE_CONTROL) {
-        res.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static(if api { "no-store" } else { "public, max-age=300" }));
-    }
-    res
-}
-
 pub struct AppState {
     pub pool: AnyPool,
     pub rooms: tokio::sync::Mutex<HashMap<String, room::RoomHandle>>,
-    pub login_fails: std::sync::Mutex<HashMap<String, (u32, Instant)>>,
-    pub guest_log: std::sync::Mutex<HashMap<String, Vec<Instant>>>,
+    /// Every rate limit in one place: login attempts, sign-ups, guest joins, rooms, uploads.
+    pub limits: guard::Limiter,
 }
 
 async fn seed_admin(pool: &AnyPool) {
@@ -65,7 +53,7 @@ async fn main() {
     db::migrate(&pool).await;
     seed_admin(&pool).await;
 
-    let state = Arc::new(AppState { pool, rooms: Default::default(), login_fails: Default::default(), guest_log: Default::default() });
+    let state = Arc::new(AppState { pool, rooms: Default::default(), limits: Default::default() });
     let dir = std::env::var("STATIC_DIR").unwrap_or_else(|_| "../web/out".into());
 
     // The same process serves the game page, so there is one thing to host and no cross-site setup.
@@ -74,8 +62,9 @@ async fn main() {
         .not_found_service(ServeFile::new(format!("{dir}/404.html")));
 
     let mut app = api::router(state.clone())
+        .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
         .fallback_service(files)
-        .layer(from_fn(cache_headers))
+        .layer(from_fn(guard::headers))
         .layer(CompressionLayer::new());
     if std::env::var("DEV_CORS").is_ok() {
         app = app.layer(CorsLayer::permissive());

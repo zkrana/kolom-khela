@@ -53,9 +53,15 @@ pub fn verify_password(p: &str, hash: &str) -> bool {
     PasswordHash::new(hash).map(|h| Argon2::default().verify_password(p.as_bytes(), &h).is_ok()).unwrap_or(false)
 }
 
+/// The player behind a session token, or None when the token is unknown, too old, or the account is blocked.
+/// Sessions age out after guard::SESSION_MAX_AGE: a token copied off an old machine stops working on its own.
 pub async fn user_by_token(st: &AppState, token: &str) -> Option<User> {
-    let u: Option<User> = sqlx::query_as(db::q(&format!("{USER_SELECT} JOIN sessions s ON s.user_id = u.id WHERE s.token_hash = ?")))
+    let cutoff = crate::db::now() - crate::guard::SESSION_MAX_AGE;
+    let u: Option<User> = sqlx::query_as(db::q(&format!(
+        "{USER_SELECT} JOIN sessions s ON s.user_id = u.id WHERE s.token_hash = ? AND s.created_at > ?"
+    )))
     .bind(hash_token(token))
+    .bind(cutoff)
     .fetch_optional(&st.pool)
     .await
     .map_err(|e| eprintln!("session lookup failed: {e}"))

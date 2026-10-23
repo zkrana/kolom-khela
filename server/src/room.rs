@@ -261,6 +261,16 @@ impl Room {
         .to_string()
     }
 
+    /// In the lobby the desk shows everyone's kolom at its starting place, so a player sees the pen they picked (and
+    /// where they will sit) before anything begins. Nothing can be shot in the lobby, so these are display only.
+    fn refresh_lobby_board(&mut self) {
+        if self.phase != Phase::Lobby {
+            return;
+        }
+        let specs: Vec<&crate::pens::Pen> = self.seats.iter().map(|s| crate::pens::find_or_default(&s.pen)).collect();
+        self.bodies = game::new_board(&specs);
+    }
+
     fn push_state(&self) {
         self.sync_info();
         self.broadcast(&self.state_json());
@@ -280,9 +290,11 @@ impl Room {
                     if self.phase == Phase::Lobby {
                         seat.pen = pen;
                     }
+                    self.refresh_lobby_board();
                 } else if self.phase == Phase::Lobby && self.seats.len() < MAX_SEATS {
                     let lives = self.difficulty.lives();
                     self.seats.push(Seat { user_id, name, pen, avatar, tx: Some(tx), reward: 0, alive: true, lives, knocks: 0, falls: 0, elim: 0 });
+                    self.refresh_lobby_board();
                 } else {
                     self.watchers.retain(|(id, _)| *id != user_id);
                     self.watchers.push((user_id, tx));
@@ -298,6 +310,7 @@ impl Room {
                             self.host_id = s.user_id;
                         }
                     }
+                    self.refresh_lobby_board();
                 } else if let Some(s) = self.seats.iter_mut().find(|s| s.user_id == user_id) {
                     s.tx = None;
                 }
@@ -344,8 +357,8 @@ impl Room {
                     s.elim = 0;
                 }
                 self.results = Value::Null;
-                self.bodies.clear();
                 self.phase = Phase::Lobby;
+                self.refresh_lobby_board();
                 self.push_state();
             }
             Cmd::Shoot { user_id, dx, dy, power, lx, ly } => {
