@@ -20,6 +20,8 @@ pub struct User {
     pub pen: String,
     #[serde(skip)]
     pub pens: String,
+    pub guest: i64,
+    pub contact: Option<String>,
     #[sqlx(default)]
     #[serde(rename = "avatarAt")]
     pub avatar_at: Option<i64>,

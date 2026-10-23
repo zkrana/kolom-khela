@@ -1,6 +1,6 @@
 'use client'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api, getToken, wsUrl } from '../../lib/api'
+import { api, getToken, setToken, wsUrl } from '../../lib/api'
 import { drawPen } from '../../lib/pens'
 import { Avatar } from '../../lib/ui'
 import { isMuted, setMuted, sfx } from '../../lib/sound'
@@ -133,6 +133,69 @@ function drawBody(ctx, b, t, active, name, seat) {
   }
 }
 
+function GuestJoin({ code, info, onDone }) {
+  const [f, setF] = useState({ name: '', email: '' })
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const submit = async (e) => {
+    e.preventDefault()
+    setBusy(true); setError('')
+    try {
+      const d = await api('/api/auth/guest', { method: 'POST', body: f })
+      setToken(d.token)
+      onDone()
+    } catch (err) { setError(err.message); setBusy(false) }
+  }
+  const later = () => { try { sessionStorage.setItem('kolom_next', `/room/?code=${code}`) } catch {}; window.location.href = '/' }
+  return (
+    <div className="wrap" style={{ maxWidth: 460, paddingTop: '8vh' }}>
+      <div className="card hero">
+        <h1 style={{ fontSize: 28 }}>{info && info.host ? `${info.host} invited you` : 'You are invited'}</h1>
+        <p className="muted">Join the Kolom Khela game in room <b style={{ color: 'var(--gold)', letterSpacing: 2 }}>{code}</b>. Just a name and your email, no password needed.</p>
+        {info === false && <p className="err">This room may have closed, but you can still try.</p>}
+        <form onSubmit={submit}>
+          <label htmlFor="gname">Your name</label>
+          <input id="gname" required minLength={2} maxLength={24} autoComplete="nickname" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
+          <label htmlFor="gemail">Email</label>
+          <input id="gemail" type="email" required autoComplete="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} />
+          {error && <p className="err" role="alert">{error}</p>}
+          <div style={{ marginTop: 16 }}><button disabled={busy} style={{ width: '100%', fontSize: 18, padding: 13 }}>{busy ? 'Joining...' : 'Join the game'}</button></div>
+        </form>
+        <p className="muted" style={{ marginTop: 14 }}>Already have an account? <a href="/" onClick={(e) => { e.preventDefault(); later() }}>Log in</a></p>
+      </div>
+    </div>
+  )
+}
+
+function ShareBar({ url, host }) {
+  const [copied, setCopied] = useState(false)
+  const text = `${host ? `${host} invited you` : 'Come play'} to Kolom Khela, the pen flicking game from school days!`
+  const enc = encodeURIComponent
+  const open = (href) => window.open(href, '_blank', 'noopener,noreferrer,width=640,height=560')
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(url) } catch {
+      const el = document.getElementById('invite-url'); el?.select(); try { document.execCommand('copy') } catch {}
+    }
+    setCopied(true); setTimeout(() => setCopied(false), 1600)
+  }
+  const native = typeof navigator !== 'undefined' && !!navigator.share
+  const b = (bg) => ({ background: bg, color: '#fff', boxShadow: 'none', flex: '1 1 46%', padding: '9px 8px', fontSize: 14 })
+  return (
+    <div>
+      <div className="row" style={{ flexWrap: 'nowrap', gap: 6 }}>
+        <input id="invite-url" readOnly value={url} onFocus={(e) => e.target.select()} aria-label="Invite link" style={{ fontSize: 13, padding: '9px 10px' }} />
+        <button type="button" className="small" onClick={copy} style={{ whiteSpace: 'nowrap', padding: '9px 12px' }}>{copied ? 'Copied' : 'Copy link'}</button>
+      </div>
+      <div className="row" style={{ gap: 6, marginTop: 8 }}>
+        <button type="button" style={b('#1faa59')} onClick={() => open(`https://wa.me/?text=${enc(`${text} ${url}`)}`)}>WhatsApp</button>
+        <button type="button" style={b('#1877f2')} onClick={() => open(`https://www.facebook.com/sharer/sharer.php?u=${enc(url)}&quote=${enc(text)}`)}>Facebook</button>
+        <button type="button" style={b('#0a66c2')} onClick={() => open(`https://www.linkedin.com/sharing/share-offsite/?url=${enc(url)}`)}>LinkedIn</button>
+        {native && <button type="button" className="ghost" style={{ flex: '1 1 46%', padding: '9px 8px', fontSize: 14 }} onClick={() => navigator.share({ title: 'Kolom Khela', text, url }).catch(() => {})}>More...</button>}
+      </div>
+    </div>
+  )
+}
+
 export default function Game({ code }) {
   const canvas = useRef(null)
   const ws = useRef(null)
@@ -147,8 +210,9 @@ export default function Game({ code }) {
   const [logs, setLogs] = useState([])
   const [conn, setConn] = useState('connecting') // connecting | live | closed | gone
   const [, setTick] = useState(0)
-  const [copied, setCopied] = useState(false)
   const [desk, setDesk] = useState('bench')
+  const [auth, setAuth] = useState('checking') // checking | need | ok
+  const [invite0, setInvite0] = useState(null)
   const [mute, setMute] = useState(false)
   const deskRef = useRef('bench')
 
@@ -217,18 +281,19 @@ export default function Game({ code }) {
         else setConn('gone')
       }
     }
-    if (!getToken()) {
-      try { sessionStorage.setItem('kolom_next', `/room/?code=${code}`) } catch {}
-      window.location.href = '/'
-      return
-    }
-    api('/api/me').then((d) => { meRef.current = d.user; setMe(d.user); connect() }).catch(() => {
-      try { sessionStorage.setItem('kolom_next', `/room/?code=${code}`) } catch {}
-      window.location.href = '/'
-    })
+    if (auth !== 'ok') return
+    connect()
     const iv = setInterval(() => setTick((t) => t + 1), 250)
     return () => { dead = true; clearTimeout(timer); clearInterval(iv); ws.current?.close() }
-  }, [code, pushLog])
+  }, [code, pushLog, auth])
+
+  // Is there a signed-in player? If not, the page asks for a name and email instead of sending them away.
+  useEffect(() => {
+    if (auth !== 'checking') return
+    if (!getToken()) { setAuth('need'); return }
+    api('/api/me').then((d) => { meRef.current = d.user; setMe(d.user); setAuth('ok') }).catch(() => { setToken(''); setAuth('need') })
+  }, [auth])
+  useEffect(() => { api(`/api/rooms/${code}`).then(setInvite0).catch(() => setInvite0(false)) }, [code])
 
   const send = (o) => { if (ws.current?.readyState === 1) ws.current.send(JSON.stringify(o)) }
 
@@ -324,12 +389,8 @@ export default function Game({ code }) {
   }
 
   const invite = typeof window !== 'undefined' ? `${window.location.origin}/room/?code=${code}` : ''
-  const share = async () => {
-    try {
-      if (navigator.share) await navigator.share({ title: 'Kolom Khela', text: 'Play kolom khela with me!', url: invite })
-      else { await navigator.clipboard.writeText(invite); setCopied(true); setTimeout(() => setCopied(false), 1500) }
-    } catch {}
-  }
+  if (auth === 'checking') return <div className="wrap muted">Loading...</div>
+  if (auth === 'need') return <GuestJoin code={code} info={invite0} onDone={() => setAuth('checking')} />
 
   if (conn === 'gone') return <div className="wrap"><div className="card"><h2>This room has closed</h2><p className="muted">Start a new game from the lobby.</p><a className="btn" href="/">Back to lobby</a></div></div>
 
@@ -363,7 +424,9 @@ export default function Game({ code }) {
           ))}
           {state?.phase === 'lobby' && (
             <div style={{ marginTop: 12 }}>
-              <button className="ghost" onClick={share} style={{ width: '100%', marginBottom: 8 }}>{copied ? 'Link copied' : 'Invite friends'}</button>
+              <h3 style={{ margin: '0 0 8px' }}>Invite friends</h3>
+              <ShareBar url={invite} host={me?.name} />
+              <div style={{ height: 10 }} />
               {isHost ? <button onClick={() => send({ t: 'start' })} disabled={state.players.length < 2} style={{ width: '100%' }}>{state.players.length < 2 ? 'Need 2 players' : 'Start game'}</button> : <p className="muted">The host starts the game.</p>}
             </div>
           )}

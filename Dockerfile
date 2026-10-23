@@ -4,6 +4,9 @@ WORKDIR /web
 COPY web/package*.json ./
 RUN npm ci
 COPY web/ ./
+# The public address, so link previews (WhatsApp, Facebook, LinkedIn) point at the right place.
+ARG NEXT_PUBLIC_SITE_URL
+ENV NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL
 RUN npm run build
 
 FROM rust:1-slim AS server

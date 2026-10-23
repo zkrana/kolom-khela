@@ -88,6 +88,11 @@ function Lobby({ me, reload }) {
   return (
     <div className="wrap">
       <Nav me={me} active="play" onLogout={reload} />
+      {me.user.guest && (
+        <div className="card" style={{ marginBottom: 16, borderColor: 'var(--gold)' }}>
+          You are playing as a guest. <a href="/profile/">Save your account</a> so you keep your coins and pens and can log in again.
+        </div>
+      )}
       <div className="grid2">
         <div className="card hero">
           <div className="row" style={{ marginBottom: 6 }}>

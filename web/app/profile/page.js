@@ -23,6 +23,7 @@ export default function Profile() {
   const [pw, setPw] = useState({ current: '', next: '' })
   const [msg, setMsg] = useState({ kind: '', text: '' })
   const [busy, setBusy] = useState(false)
+  const [save, setSave] = useState({ email: '', password: '' })
   const flash = (kind, text) => setMsg({ kind, text })
 
   if (!me) return <div className="wrap muted">Loading...</div>
@@ -55,6 +56,11 @@ export default function Profile() {
     try { await api('/api/me/password', { method: 'POST', body: { current: pw.current, new: pw.next } }); setPw({ current: '', next: '' }); flash('ok', 'Password changed') } catch (err) { flash('err', err.message) }
   }
 
+  const saveAccount = async (e) => {
+    e.preventDefault()
+    try { await api('/api/me/upgrade', { method: 'POST', body: save }); setSave({ email: '', password: '' }); await reload(); flash('ok', 'Account saved. You can log in with this email and password anywhere.') } catch (err) { flash('err', err.message) }
+  }
+
   return (
     <div className="wrap">
       <Nav me={me} active="profile" />
@@ -64,7 +70,7 @@ export default function Profile() {
             <Avatar id={u.id} name={u.name} at={u.avatarAt} size={96} />
             <div>
               <h2 style={{ margin: 0 }}>{u.name}</h2>
-              <div className="muted">{u.email}{u.role === 'admin' ? ' · admin' : ''}</div>
+              <div className="muted">{u.guest ? 'Guest player' : u.email}{u.role === 'admin' ? ' · admin' : ''}</div>
               <div className="row" style={{ marginTop: 12 }}>
                 <input ref={file} type="file" accept="image/jpeg,image/png,image/webp" onChange={upload} hidden />
                 <button className="small" onClick={() => file.current.click()} disabled={busy}>{u.avatarAt ? 'Change picture' : 'Add a picture'}</button>
@@ -82,19 +88,36 @@ export default function Profile() {
           {msg.text && <p className={msg.kind === 'ok' ? 'ok' : 'err'} role="status">{msg.text}</p>}
         </div>
         <div className="card">
+          {u.guest && (
+            <div style={{ marginBottom: 22 }}>
+              <h3>Save your account</h3>
+              <p className="muted">You joined from an invite link, so this account has no password yet. Save it to keep your coins and pens and to log in from any device.</p>
+              <form onSubmit={saveAccount}>
+                <label htmlFor="se">Email</label>
+                <input id="se" type="email" required autoComplete="email" value={save.email} onChange={(e) => setSave({ ...save, email: e.target.value })} />
+                <label htmlFor="sp">Choose a password</label>
+                <input id="sp" type="password" required minLength={6} autoComplete="new-password" value={save.password} onChange={(e) => setSave({ ...save, password: e.target.value })} />
+                <div style={{ marginTop: 14 }}><button>Save my account</button></div>
+              </form>
+            </div>
+          )}
           <h3>Display name</h3>
           <form onSubmit={saveName} className="row" style={{ flexWrap: 'nowrap' }}>
             <input value={name} onChange={(e) => setName(e.target.value)} placeholder={u.name} minLength={2} maxLength={24} aria-label="New name" />
             <button disabled={name.trim().length < 2}>Save</button>
           </form>
-          <h3 style={{ marginTop: 22 }}>Change password</h3>
-          <form onSubmit={savePw}>
-            <label htmlFor="cur">Current password</label>
-            <input id="cur" type="password" autoComplete="current-password" required value={pw.current} onChange={(e) => setPw({ ...pw, current: e.target.value })} />
-            <label htmlFor="new">New password</label>
-            <input id="new" type="password" autoComplete="new-password" required minLength={6} value={pw.next} onChange={(e) => setPw({ ...pw, next: e.target.value })} />
-            <div style={{ marginTop: 14 }}><button>Change password</button></div>
-          </form>
+          {!u.guest && (
+            <>
+              <h3 style={{ marginTop: 22 }}>Change password</h3>
+              <form onSubmit={savePw}>
+                <label htmlFor="cur">Current password</label>
+                <input id="cur" type="password" autoComplete="current-password" required value={pw.current} onChange={(e) => setPw({ ...pw, current: e.target.value })} />
+                <label htmlFor="new">New password</label>
+                <input id="new" type="password" autoComplete="new-password" required minLength={6} value={pw.next} onChange={(e) => setPw({ ...pw, next: e.target.value })} />
+                <div style={{ marginTop: 14 }}><button>Change password</button></div>
+              </form>
+            </>
+          )}
         </div>
       </div>
     </div>

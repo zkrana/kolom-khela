@@ -42,7 +42,7 @@ export default function Admin() {
 
   const shown = useMemo(() => {
     const t = q.trim().toLowerCase()
-    return t ? users.filter((u) => u.name.toLowerCase().includes(t) || u.email.toLowerCase().includes(t)) : users
+    return t ? users.filter((u) => u.name.toLowerCase().includes(t) || (u.guest ? u.contact || '' : u.email).toLowerCase().includes(t)) : users
   }, [users, q])
 
   if (!me || ok === null) return <div className="wrap muted">Loading...</div>
@@ -92,7 +92,7 @@ export default function Admin() {
                 <td>
                   <span className="row" style={{ gap: 10, flexWrap: 'nowrap' }}>
                     <Avatar id={u.id} name={u.name} at={u.avatarAt} size={36} />
-                    <span><b>{u.name}</b>{u.blocked ? <span className="pill" style={{ marginLeft: 6, background: 'var(--red)', color: '#fff' }}>blocked</span> : null}<br /><span className="muted">{u.email}</span></span>
+                    <span><b>{u.name}</b>{u.blocked ? <span className="pill" style={{ marginLeft: 6, background: 'var(--red)', color: '#fff' }}>blocked</span> : null}{u.guest ? <span className="pill" style={{ marginLeft: 6 }}>guest</span> : null}<br /><span className="muted">{u.guest ? u.contact : u.email}</span></span>
                   </span>
                 </td>
                 <td>{u.role}</td>

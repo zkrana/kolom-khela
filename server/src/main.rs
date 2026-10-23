@@ -31,6 +31,7 @@ pub struct AppState {
     pub pool: SqlitePool,
     pub rooms: tokio::sync::Mutex<HashMap<String, room::RoomHandle>>,
     pub login_fails: std::sync::Mutex<HashMap<String, (u32, Instant)>>,
+    pub guest_log: std::sync::Mutex<HashMap<String, Vec<Instant>>>,
 }
 
 async fn seed_admin(pool: &SqlitePool) {
@@ -64,7 +65,7 @@ async fn main() {
     db::migrate(&pool).await;
     seed_admin(&pool).await;
 
-    let state = Arc::new(AppState { pool, rooms: Default::default(), login_fails: Default::default() });
+    let state = Arc::new(AppState { pool, rooms: Default::default(), login_fails: Default::default(), guest_log: Default::default() });
     let dir = std::env::var("STATIC_DIR").unwrap_or_else(|_| "../web/out".into());
 
     // The same process serves the game page, so there is one thing to host and no cross-site setup.

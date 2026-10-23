@@ -36,6 +36,8 @@ pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/auth/register", post(register))
         .route("/api/auth/login", post(login))
+        .route("/api/auth/guest", post(guest_join))
+        .route("/api/me/upgrade", post(upgrade_guest))
         .route("/api/auth/logout", post(logout))
         .route("/api/me", get(me).patch(update_me))
         .route("/api/me/password", post(change_password))
@@ -94,7 +96,7 @@ struct RegisterBody {
 async fn register(State(st): St, Json(b): Json<RegisterBody>) -> Res<Value> {
     let email = b.email.trim().to_lowercase();
     let name = b.name.trim().to_string();
-    if !email.contains('@') || email.len() > 120 || email.contains(' ') {
+    if !valid_email(&email) {
         return err(StatusCode::BAD_REQUEST, "Enter a valid email");
     }
     if name.chars().count() < 2 || name.chars().count() > 24 {
@@ -118,6 +120,92 @@ async fn register(State(st): St, Json(b): Json<RegisterBody>) -> Res<Value> {
     };
     let token = session_for(&st, id).await?;
     Ok(Json(json!({ "token": token, "user": { "id": id, "name": name, "email": email, "role": "player", "coins": 0, "pen": "econo" } })))
+}
+
+fn valid_email(e: &str) -> bool {
+    let at = e.find('@');
+    e.len() <= 120 && !e.contains(' ') && !e.ends_with("@guest.invalid") && matches!(at, Some(i) if i > 0 && e[i + 1..].contains('.') && !e.ends_with('.'))
+}
+
+#[derive(Deserialize)]
+struct GuestBody {
+    email: String,
+    name: String,
+}
+
+fn client_ip(h: &HeaderMap) -> String {
+    h.get("x-forwarded-for").and_then(|v| v.to_str().ok()).and_then(|v| v.split(',').next()).map(|s| s.trim().to_string()).unwrap_or_else(|| "local".into())
+}
+
+/// Someone opened an invite link: name and email is all it takes to sit down at the board. The account has no password
+/// (it cannot be logged into from elsewhere) until they choose to save it from the profile page.
+async fn guest_join(State(st): St, headers: HeaderMap, Json(b): Json<GuestBody>) -> Res<Value> {
+    let email = b.email.trim().to_lowercase();
+    let name = b.name.trim().to_string();
+    if !valid_email(&email) {
+        return err(StatusCode::BAD_REQUEST, "Enter a valid email");
+    }
+    if name.chars().count() < 2 || name.chars().count() > 24 {
+        return err(StatusCode::BAD_REQUEST, "Name must be 2 to 24 characters");
+    }
+    {
+        // At most 15 new guests per address every 10 minutes.
+        let mut log = st.guest_log.lock().unwrap();
+        let hits = log.entry(client_ip(&headers)).or_default();
+        hits.retain(|t| t.elapsed() < Duration::from_secs(600));
+        if hits.len() >= 15 {
+            return err(StatusCode::TOO_MANY_REQUESTS, "Too many new players from here. Try again in a few minutes.");
+        }
+        hits.push(Instant::now());
+    }
+    let taken: Option<i64> = sqlx::query_scalar("SELECT id FROM users WHERE email = ? AND guest = 0").bind(&email).fetch_optional(&st.pool).await.ok().flatten();
+    if taken.is_some() {
+        return err(StatusCode::CONFLICT, "This email already has an account. Log in instead.");
+    }
+    let fake = format!("guest-{}@guest.invalid", &auth::new_token()[..12]);
+    let res = sqlx::query("INSERT INTO users (email, name, pass_hash, guest, contact, created_at) VALUES (?, ?, '', 1, ?, ?)")
+        .bind(&fake)
+        .bind(&name)
+        .bind(&email)
+        .bind(db::now())
+        .execute(&st.pool)
+        .await;
+    let Ok(id) = res.map(|r| r.last_insert_rowid()) else { return err(StatusCode::INTERNAL_SERVER_ERROR, "Could not join. Try again.") };
+    let token = session_for(&st, id).await?;
+    Ok(Json(json!({ "token": token, "user": { "id": id, "name": name, "role": "player", "coins": 0, "pen": "econo", "guest": true } })))
+}
+
+#[derive(Deserialize)]
+struct UpgradeBody {
+    email: String,
+    password: String,
+}
+
+/// A guest keeps their coins and pens by choosing a real email and a password.
+async fn upgrade_guest(State(st): St, headers: HeaderMap, Json(b): Json<UpgradeBody>) -> Res<Value> {
+    let u = need_user(&st, &headers).await?;
+    if u.guest != 1 {
+        return err(StatusCode::BAD_REQUEST, "This account is already saved");
+    }
+    let email = b.email.trim().to_lowercase();
+    if !valid_email(&email) {
+        return err(StatusCode::BAD_REQUEST, "Enter a valid email");
+    }
+    if b.password.len() < 6 || b.password.len() > 100 {
+        return err(StatusCode::BAD_REQUEST, "Password must be at least 6 characters");
+    }
+    let pw = b.password.clone();
+    let hash = tokio::task::spawn_blocking(move || auth::hash_password(&pw)).await.unwrap_or_default();
+    let done = sqlx::query("UPDATE users SET email = ?, pass_hash = ?, guest = 0, contact = NULL WHERE id = ? AND guest = 1")
+        .bind(&email)
+        .bind(&hash)
+        .bind(u.id)
+        .execute(&st.pool)
+        .await;
+    match done {
+        Ok(_) => Ok(Json(json!({ "ok": true }))),
+        Err(_) => err(StatusCode::CONFLICT, "That email is already registered. Log in with it instead."),
+    }
 }
 
 #[derive(Deserialize)]
@@ -156,7 +244,7 @@ async fn login(State(st): St, Json(b): Json<LoginBody>) -> Res<Value> {
     }
     st.login_fails.lock().unwrap().remove(&email);
     let token = session_for(&st, user.id).await?;
-    Ok(Json(json!({ "token": token, "user": { "id": user.id, "name": user.name, "email": user.email, "role": user.role, "coins": user.coins, "pen": user.pen, "avatarAt": user.avatar_at } })))
+    Ok(Json(json!({ "token": token, "user": { "id": user.id, "name": user.name, "email": user.email, "role": user.role, "coins": user.coins, "pen": user.pen, "avatarAt": user.avatar_at, "guest": false } })))
 }
 
 async fn logout(State(st): St, headers: HeaderMap) -> Res<Value> {
@@ -176,7 +264,7 @@ async fn me(State(st): St, headers: HeaderMap) -> Res<Value> {
     .await
     .unwrap_or((0, 0, 0, 0));
     Ok(Json(json!({
-        "user": { "id": u.id, "name": u.name, "email": u.email, "role": u.role, "coins": u.coins, "pen": u.pen, "avatarAt": u.avatar_at, "joined": u.created_at },
+        "user": { "id": u.id, "name": u.name, "email": u.email, "role": u.role, "coins": u.coins, "pen": u.pen, "avatarAt": u.avatar_at, "joined": u.created_at, "guest": u.guest == 1 },
         "stats": { "played": row.0, "wins": row.1, "loser": row.2, "coins": row.3 }
     })))
 }

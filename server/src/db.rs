@@ -69,6 +69,8 @@ pub async fn migrate(pool: &SqlitePool) {
         "ALTER TABLE users ADD COLUMN coins INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE users ADD COLUMN pen TEXT NOT NULL DEFAULT 'econo'",
         "ALTER TABLE users ADD COLUMN pens TEXT NOT NULL DEFAULT 'econo'",
+        "ALTER TABLE users ADD COLUMN guest INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN contact TEXT",
     ] {
         let _ = sqlx::query(s).execute(pool).await;
     }
