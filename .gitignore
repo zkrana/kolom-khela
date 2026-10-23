@@ -1,0 +1,8 @@
+node_modules
+web/out
+web/.next
+server/target
+*.db
+*.db-shm
+*.db-wal
+.env*.local
